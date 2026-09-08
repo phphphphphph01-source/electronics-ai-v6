@@ -1147,6 +1147,10 @@ def display_result(raw, quality):
         verification_review = bool(raw.get("verification_review"))
         level = level_for_yolo(score)
         kind = "model confidence score"
+        candidates = [
+        (x.get("raw_name", x["name"]), x.get("score", 0.0))
+        for x in detections[:TOP_K]
+    ]
     elif engine_name == "learned-memory":
         level = "Learned"
         kind = "learned memory match"
