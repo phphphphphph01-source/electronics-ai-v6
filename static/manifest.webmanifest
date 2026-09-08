@@ -1,0 +1,19 @@
+{
+  "name": "Electronics AI",
+  "short_name": "Electronics AI",
+  "description": "AI electronics image analysis platform",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#020914",
+  "theme_color": "#071321",
+  "lang": "th",
+  "icons": [
+    {
+      "src": "/static/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

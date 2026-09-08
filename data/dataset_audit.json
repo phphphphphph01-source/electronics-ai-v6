@@ -1,0 +1,496 @@
+{
+  "dataset_root": "/mnt/data/project_inspect/1/custom_dataset",
+  "train_images": 84,
+  "val_images": 27,
+  "train_labeled_images": 84,
+  "val_labeled_images": 27,
+  "classes": 62,
+  "issues": [
+    "Classes with fewer than 3 training objects: 59",
+    "Full-image bounding boxes detected: 87; use tight boxes around the actual object when possible.",
+    "Dataset is very small for the number of classes; add more varied images before expecting strong generalization.",
+    "Validation set is smaller than the number of classes; metrics may be unstable."
+  ],
+  "missing_labels": {
+    "train": [],
+    "val": []
+  },
+  "orphan_labels": {
+    "train": [],
+    "val": []
+  },
+  "empty_labels": {
+    "train": [],
+    "val": []
+  },
+  "bad_labels": [],
+  "class_counts": {
+    "Arduino_Nano": {
+      "class_id": 0,
+      "train_objects": 10,
+      "val_objects": 3
+    },
+    "LED": {
+      "class_id": 1,
+      "train_objects": 7,
+      "val_objects": 2
+    },
+    "BMP280": {
+      "class_id": 2,
+      "train_objects": 6,
+      "val_objects": 1
+    },
+    "Diode_1N4007": {
+      "class_id": 3,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Electrolytic_Capacitor": {
+      "class_id": 4,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "Relay_Module_1_Channel": {
+      "class_id": 5,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "IR_Obstacle_Sensor": {
+      "class_id": 6,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "Sound_Sensor_Module": {
+      "class_id": 7,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "PIR_Motion_Sensor": {
+      "class_id": 8,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Jumper_Wires": {
+      "class_id": 9,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "SIM800L_GSM_Module": {
+      "class_id": 10,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "LM2596_Buck_Converter": {
+      "class_id": 11,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "NEMA17_Stepper_Motor": {
+      "class_id": 12,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "LCD_16x2": {
+      "class_id": 13,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "ESP8266_NodeMCU": {
+      "class_id": 14,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "Rain_Sensor_Module": {
+      "class_id": 15,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Raspberry_Pi_Pico": {
+      "class_id": 16,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Transistor": {
+      "class_id": 17,
+      "train_objects": 2,
+      "val_objects": 1
+    },
+    "HC05_Bluetooth_Module": {
+      "class_id": 18,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "Fingerprint_Sensor": {
+      "class_id": 19,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Arduino_UNO_R3": {
+      "class_id": 20,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "Color_Sensor_TCS3200": {
+      "class_id": 21,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "SG90_Servo_Motor": {
+      "class_id": 22,
+      "train_objects": 2,
+      "val_objects": 1
+    },
+    "DC_Gear_Motor": {
+      "class_id": 23,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Potentiometer": {
+      "class_id": 24,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Raspberry_Pi_4": {
+      "class_id": 25,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Relay_Module_4_Channel": {
+      "class_id": 26,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "GPS_NEO6M": {
+      "class_id": 27,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Push_Button": {
+      "class_id": 28,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "OLED_I2C": {
+      "class_id": 29,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "18650_Lithium_Battery": {
+      "class_id": 30,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "BBC_microbit": {
+      "class_id": 31,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "9V_Battery": {
+      "class_id": 32,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "MPU6050": {
+      "class_id": 33,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Breadboard_Power_Supply": {
+      "class_id": 34,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Resistor": {
+      "class_id": 35,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "ESP32_DevKit": {
+      "class_id": 36,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "ESP32_CAM": {
+      "class_id": 37,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Multimeter": {
+      "class_id": 38,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "HC_SR04": {
+      "class_id": 39,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "TFT_LCD": {
+      "class_id": 40,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "TP4056_Battery_Charger": {
+      "class_id": 41,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "MAX7219_LED_Matrix": {
+      "class_id": 42,
+      "train_objects": 1,
+      "val_objects": 1
+    },
+    "555_Timer_IC": {
+      "class_id": 43,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Joystick_Module": {
+      "class_id": 44,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "RFID_RC522": {
+      "class_id": 45,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Buzzer": {
+      "class_id": 46,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "DHT22": {
+      "class_id": 47,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "TM1637_7Segment": {
+      "class_id": 48,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "L298N_Motor_Driver": {
+      "class_id": 49,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Arduino_Mega_2560": {
+      "class_id": 50,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Oscilloscope": {
+      "class_id": 51,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Breadboard": {
+      "class_id": 52,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "DHT11": {
+      "class_id": 53,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Soldering_Iron": {
+      "class_id": 54,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Solenoid": {
+      "class_id": 55,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Soil_Moisture_Sensor": {
+      "class_id": 56,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "LoRa_RA02": {
+      "class_id": 57,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "Stepper_28BYJ48": {
+      "class_id": 58,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "LCD_20x4": {
+      "class_id": 59,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "MQ2_Gas_Sensor": {
+      "class_id": 60,
+      "train_objects": 1,
+      "val_objects": 0
+    },
+    "L293D_Motor_Driver": {
+      "class_id": 61,
+      "train_objects": 1,
+      "val_objects": 0
+    }
+  },
+  "train_val_overlap": [],
+  "full_image_boxes": 87,
+  "full_image_box_files": [
+    "18650_Lithium_Battery__051.txt",
+    "555_Timer_IC__060.txt",
+    "9V_Battery__069.txt",
+    "Arduino_Mega_2560__073.txt",
+    "Arduino_Nano__000.txt",
+    "Arduino_UNO_R3__021.txt",
+    "BBC_microbit__036.txt",
+    "BMP280__044.txt",
+    "Breadboard_Power_Supply__042.txt",
+    "Breadboard__076.txt",
+    "Buzzer__066.txt",
+    "Color_Sensor_TCS3200__022.txt",
+    "DC_Gear_Motor__024.txt",
+    "DHT11__077.txt",
+    "DHT22__068.txt",
+    "Diode_1N4007__003.txt",
+    "ESP32_CAM__046.txt",
+    "ESP32_DevKit__045.txt",
+    "ESP8266_NodeMCU__014.txt",
+    "Electrolytic_Capacitor__056.txt",
+    "Fingerprint_Sensor__020.txt",
+    "GPS_NEO6M__030.txt",
+    "HC05_Bluetooth_Module__019.txt",
+    "HC_SR04__049.txt",
+    "IR_Obstacle_Sensor__006.txt",
+    "Joystick_Module__063.txt",
+    "Jumper_Wires__009.txt",
+    "L293D_Motor_Driver__062.txt",
+    "L298N_Motor_Driver__072.txt",
+    "LCD_16x2__013.txt",
+    "LCD_20x4__086.txt",
+    "LED__001.txt",
+    "LM2596_Buck_Converter__082.txt",
+    "LoRa_RA02__084.txt",
+    "MAX7219_LED_Matrix__071.txt",
+    "MPU6050__040.txt",
+    "MQ2_Gas_Sensor__089.txt",
+    "Multimeter__061.txt",
+    "NEMA17_Stepper_Motor__012.txt",
+    "OLED_I2C__033.txt",
+    "Oscilloscope__074.txt",
+    "PIR_Motion_Sensor__008.txt",
+    "Potentiometer__026.txt",
+    "Push_Button__032.txt",
+    "RFID_RC522__064.txt",
+    "Rain_Sensor_Module__016.txt",
+    "Raspberry_Pi_4__027.txt",
+    "Raspberry_Pi_Pico__017.txt",
+    "Relay_Module_1_Channel__005.txt",
+    "Relay_Module_4_Channel__052.txt",
+    "Resistor__043.txt",
+    "SG90_Servo_Motor__023.txt",
+    "SG90_Servo_Motor__065.txt",
+    "SIM800L_GSM_Module__010.txt",
+    "Soil_Moisture_Sensor__081.txt",
+    "Soldering_Iron__078.txt",
+    "Solenoid__079.txt",
+    "Sound_Sensor_Module__007.txt",
+    "Stepper_28BYJ48__085.txt",
+    "TFT_LCD__050.txt",
+    "TM1637_7Segment__070.txt",
+    "TP4056_Battery_Charger__053.txt",
+    "Transistor__018.txt",
+    "Transistor__041.txt",
+    "18650_Lithium_Battery__035.txt",
+    "9V_Battery__038.txt",
+    "Arduino_Nano__037.txt",
+    "Arduino_UNO_R3__067.txt",
+    "ESP32_DevKit__075.txt",
+    "ESP8266_NodeMCU__057.txt",
+    "Electrolytic_Capacitor__004.txt",
+    "HC05_Bluetooth_Module__087.txt",
+    "IR_Obstacle_Sensor__054.txt",
+    "Jumper_Wires__015.txt",
+    "LCD_16x2__039.txt",
+    "LED__031.txt",
+    "LM2596_Buck_Converter__011.txt",
+    "MAX7219_LED_Matrix__059.txt",
+    "Multimeter__047.txt",
+    "OLED_I2C__048.txt",
+    "Relay_Module_1_Channel__058.txt",
+    "Relay_Module_4_Channel__029.txt",
+    "Resistor__080.txt",
+    "SG90_Servo_Motor__028.txt",
+    "SIM800L_GSM_Module__025.txt",
+    "Sound_Sensor_Module__055.txt",
+    "Transistor__034.txt"
+  ],
+  "corrupt_images": {
+    "train": [],
+    "val": []
+  },
+  "duplicate_images": [],
+  "rare_classes": [
+    "Diode_1N4007",
+    "Electrolytic_Capacitor",
+    "Relay_Module_1_Channel",
+    "IR_Obstacle_Sensor",
+    "Sound_Sensor_Module",
+    "PIR_Motion_Sensor",
+    "Jumper_Wires",
+    "SIM800L_GSM_Module",
+    "LM2596_Buck_Converter",
+    "NEMA17_Stepper_Motor",
+    "LCD_16x2",
+    "ESP8266_NodeMCU",
+    "Rain_Sensor_Module",
+    "Raspberry_Pi_Pico",
+    "Transistor",
+    "HC05_Bluetooth_Module",
+    "Fingerprint_Sensor",
+    "Arduino_UNO_R3",
+    "Color_Sensor_TCS3200",
+    "SG90_Servo_Motor",
+    "DC_Gear_Motor",
+    "Potentiometer",
+    "Raspberry_Pi_4",
+    "Relay_Module_4_Channel",
+    "GPS_NEO6M",
+    "Push_Button",
+    "OLED_I2C",
+    "18650_Lithium_Battery",
+    "BBC_microbit",
+    "9V_Battery",
+    "MPU6050",
+    "Breadboard_Power_Supply",
+    "Resistor",
+    "ESP32_DevKit",
+    "ESP32_CAM",
+    "Multimeter",
+    "HC_SR04",
+    "TFT_LCD",
+    "TP4056_Battery_Charger",
+    "MAX7219_LED_Matrix",
+    "555_Timer_IC",
+    "Joystick_Module",
+    "RFID_RC522",
+    "Buzzer",
+    "DHT22",
+    "TM1637_7Segment",
+    "L298N_Motor_Driver",
+    "Arduino_Mega_2560",
+    "Oscilloscope",
+    "Breadboard",
+    "DHT11",
+    "Soldering_Iron",
+    "Solenoid",
+    "Soil_Moisture_Sensor",
+    "LoRa_RA02",
+    "Stepper_28BYJ48",
+    "LCD_20x4",
+    "MQ2_Gas_Sensor",
+    "L293D_Motor_Driver"
+  ]
+}

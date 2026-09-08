@@ -1,0 +1,623 @@
+import json
+import os
+import base64
+import io
+import urllib.request
+import urllib.error
+import re
+import sqlite3
+import threading
+import traceback
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+import torch
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageStat
+
+try:
+    from ultralytics import YOLO
+except Exception:
+    YOLO = None
+
+from flask import Flask, jsonify, render_template, request, send_from_directory
+from werkzeug.utils import secure_filename
+
+BASE = Path(__file__).resolve().parent
+DETAILS = BASE / "details.json"
+UPLOAD_DIR = BASE / "uploads"
+DATA_DIR = BASE / "data"
+DB_FILE = DATA_DIR / "electronics_ai.sqlite3"
+CUSTOM_MODEL = BASE / "runs" / "electronics" / "weights" / "best.pt"
+CUSTOM_MODEL_ALT = BASE / "models" / "best.pt"
+PRIMARY_MODEL = os.getenv("ELECTRONICS_AI_MODEL", "openai/clip-vit-large-patch14")
+FALLBACK_MODEL = os.getenv("ELECTRONICS_AI_FALLBACK", "openai/clip-vit-base-patch32")
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
+TOP_K = 7
+YOLO_CONF = float(os.getenv("ELECTRONICS_AI_YOLO_CONF", "0.25"))
+YOLO_MIN_ACCEPT = float(os.getenv("ELECTRONICS_AI_YOLO_MIN_ACCEPT", "0.45"))
+YOLO_IMGSZ = int(os.getenv("ELECTRONICS_AI_YOLO_IMGSZ", "768"))
+CLIP_MIN_SIM = float(os.getenv("ELECTRONICS_AI_CLIP_MIN_SIM", "0.20"))
+CLIP_MIN_MARGIN = float(os.getenv("ELECTRONICS_AI_CLIP_MIN_MARGIN", "0.008"))
+CLIP_TEMPERATURE = float(os.getenv("ELECTRONICS_AI_CLIP_TEMPERATURE", "0.03"))
+# Optional multimodal Vision stage. When OPENAI_API_KEY is configured, this is the primary image scanner.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_VISION_MODEL = os.getenv("ELECTRONICS_AI_VISION_MODEL", "gpt-5.6-luna")
+OPENAI_VISION_TIMEOUT = int(os.getenv("ELECTRONICS_AI_VISION_TIMEOUT", "45"))
+ALLOWED_EXT = {"jpg", "jpeg", "png", "webp", "bmp"}
+ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
+
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+CLASSES = [
+    "Arduino UNO", "Arduino Nano", "Arduino Mega", "ESP32 development board", "ESP8266 development board",
+    "Raspberry Pi single board computer", "breadboard", "breadboard power supply module", "resistor", "potentiometer",
+    "thermistor", "photoresistor LDR", "capacitor", "electrolytic capacitor", "ceramic capacitor", "diode", "LED",
+    "RGB LED", "7 segment display", "LCD display", "OLED display", "relay module", "transistor", "MOSFET",
+    "voltage regulator", "buck converter", "boost converter", "DC motor", "servo motor", "stepper motor", "buzzer",
+    "speaker", "microphone", "push button", "switch", "rotary encoder", "joystick module", "IR receiver",
+    "ultrasonic sensor", "PIR motion sensor", "temperature sensor", "humidity sensor", "light sensor", "gas sensor",
+    "soil moisture sensor", "accelerometer", "gyroscope sensor", "RFID reader", "RFID card", "GPS module",
+    "Bluetooth module", "WiFi module", "LoRa module", "camera module", "logic level converter", "motor driver module",
+    "USB to serial adapter", "battery holder", "battery", "power supply adapter", "charger", "multimeter", "oscilloscope",
+    "soldering iron", "jumper wires", "alligator clip", "PCB", "integrated circuit IC chip", "DIP socket", "crystal oscillator",
+    "terminal block", "header pins", "fuse", "transformer", "inductor", "antenna", "router", "network switch", "webcam",
+    "computer monitor", "smartphone"
+]
+
+PROMPTS = {
+    "Arduino UNO": ["Arduino UNO R3 development board", "Arduino UNO microcontroller board", "Arduino UNO board"],
+    "Arduino Nano": ["Arduino Nano development board", "Arduino Nano microcontroller board", "Arduino Nano"],
+    "Arduino Mega": ["Arduino Mega 2560 development board", "Arduino Mega microcontroller board", "Arduino Mega"],
+    "ESP32 development board": ["ESP32 development board", "ESP32 WiFi Bluetooth microcontroller board", "ESP32 board"],
+    "ESP8266 development board": ["ESP8266 NodeMCU development board", "ESP8266 WiFi microcontroller board", "ESP8266 board"],
+    "Raspberry Pi single board computer": ["Raspberry Pi single board computer", "Raspberry Pi board", "Raspberry Pi computer"],
+    "breadboard": ["solderless breadboard", "electronic prototyping breadboard", "white solderless breadboard"],
+    "breadboard power supply module": ["breadboard power supply module", "MB102 breadboard power supply", "breadboard 5V 3.3V power module"],
+    "resistor": ["electronic resistor component", "resistor with colored bands", "through hole resistor"],
+    "potentiometer": ["potentiometer variable resistor", "rotary potentiometer", "variable resistor knob"],
+    "thermistor": ["thermistor electronic component", "temperature dependent resistor", "thermistor"],
+    "photoresistor LDR": ["LDR photoresistor", "light dependent resistor", "photoresistor component"],
+    "capacitor": ["electronic capacitor component", "non polarized capacitor", "capacitor component"],
+    "electrolytic capacitor": ["electrolytic capacitor", "polarized capacitor", "aluminum electrolytic capacitor"],
+    "ceramic capacitor": ["ceramic capacitor", "ceramic disc capacitor", "ceramic electronic capacitor"],
+    "diode": ["electronic diode component", "rectifier diode", "semiconductor diode"],
+    "LED": ["LED light emitting diode", "single LED component", "LED electronic component"],
+    "RGB LED": ["RGB LED component", "red green blue LED", "RGB light emitting diode"],
+    "7 segment display": ["seven segment display", "7 segment LED display", "numeric seven segment display"],
+    "LCD display": ["LCD display module", "character LCD electronic display", "liquid crystal display module"],
+    "OLED display": ["OLED display module", "small OLED electronic display", "OLED screen module"],
+    "relay module": ["electronic relay module", "relay board module", "electromechanical relay module"],
+    "transistor": ["transistor electronic component", "BJT transistor", "semiconductor transistor"],
+    "MOSFET": ["MOSFET transistor", "power MOSFET electronic component", "MOSFET semiconductor"],
+    "voltage regulator": ["voltage regulator electronic component", "linear voltage regulator", "voltage regulator module"],
+    "buck converter": ["DC DC buck converter module", "step down voltage converter", "buck converter board"],
+    "boost converter": ["DC DC boost converter module", "step up voltage converter", "boost converter board"],
+    "DC motor": ["small DC motor", "brushed DC electric motor", "DC motor component"],
+    "servo motor": ["RC servo motor", "servo motor actuator", "hobby servo motor"],
+    "stepper motor": ["stepper motor", "stepper electric motor", "stepper motor actuator"],
+    "buzzer": ["electronic buzzer", "piezo buzzer", "buzzer component"], "speaker": ["small electronic speaker", "loudspeaker component", "speaker"],
+    "microphone": ["electret microphone component", "microphone module", "electronic microphone"], "push button": ["electronic push button switch", "tactile push button", "momentary push button"],
+    "switch": ["electronic switch", "toggle switch", "electrical switch component"], "rotary encoder": ["rotary encoder module", "electronic rotary encoder", "rotary encoder knob"],
+    "joystick module": ["analog joystick module", "electronic joystick module", "two axis joystick module"], "IR receiver": ["infrared IR receiver module", "IR remote receiver", "infrared receiver component"],
+    "ultrasonic sensor": ["ultrasonic distance sensor module", "HC-SR04 ultrasonic sensor", "ultrasonic sensor board"], "PIR motion sensor": ["PIR motion sensor module", "passive infrared motion sensor", "PIR sensor board"],
+    "temperature sensor": ["electronic temperature sensor", "temperature sensor module", "digital temperature sensor"], "humidity sensor": ["humidity sensor module", "electronic humidity sensor", "temperature humidity sensor"],
+    "light sensor": ["electronic light sensor module", "ambient light sensor", "light sensor board"], "gas sensor": ["gas sensor module", "electronic gas detection sensor", "MQ gas sensor"],
+    "soil moisture sensor": ["soil moisture sensor module", "soil humidity sensor", "soil moisture probe"], "accelerometer": ["electronic accelerometer sensor", "accelerometer module", "motion accelerometer"],
+    "gyroscope sensor": ["electronic gyroscope sensor", "gyroscope module", "gyro sensor board"], "RFID reader": ["RFID reader module", "RFID card reader", "RFID antenna reader board"],
+    "RFID card": ["RFID card tag", "contactless RFID card", "RFID access card"], "GPS module": ["GPS receiver module", "GPS electronic module", "GPS board"],
+    "Bluetooth module": ["Bluetooth wireless module", "Bluetooth serial module", "Bluetooth electronics board"], "WiFi module": ["WiFi wireless module", "WiFi electronics module", "WiFi development module"],
+    "LoRa module": ["LoRa wireless module", "LoRa radio module", "LoRa electronics board"], "camera module": ["camera module board", "small electronic camera module", "camera sensor module"],
+    "logic level converter": ["logic level converter module", "bidirectional level shifter", "logic voltage converter"], "motor driver module": ["motor driver module", "DC motor controller board", "H bridge motor driver"],
+    "USB to serial adapter": ["USB to serial converter", "USB UART adapter", "USB serial electronics module"], "battery holder": ["battery holder", "battery case holder", "battery compartment"],
+    "battery": ["electrical battery", "rechargeable battery", "battery cell"], "power supply adapter": ["AC DC power adapter", "electronic power supply adapter", "wall power adapter"],
+    "charger": ["battery charger", "electronic charger", "USB charger"], "multimeter": ["digital multimeter", "electrical multimeter", "electronic test meter"],
+    "oscilloscope": ["digital oscilloscope", "electronic oscilloscope", "oscilloscope test instrument"], "soldering iron": ["soldering iron", "electronic soldering tool", "electric soldering iron"],
+    "jumper wires": ["Dupont jumper wires", "electronic jumper wires", "breadboard jumper cables"], "alligator clip": ["alligator clip test lead", "electronic crocodile clip", "alligator electrical clip"],
+    "PCB": ["printed circuit board PCB", "electronic circuit board", "PCB board"], "integrated circuit IC chip": ["integrated circuit IC chip", "electronic IC chip", "semiconductor integrated circuit"],
+    "DIP socket": ["DIP IC socket", "dual inline package socket", "IC socket"], "crystal oscillator": ["quartz crystal oscillator", "electronic crystal component", "crystal resonator"],
+    "terminal block": ["electrical terminal block", "PCB screw terminal", "terminal connector"], "header pins": ["male header pins", "PCB header connector", "pin header"],
+    "fuse": ["electrical fuse component", "glass fuse", "electronic fuse"], "transformer": ["electrical transformer", "power transformer", "transformer component"], "inductor": ["electronic inductor", "coil inductor component", "inductor coil"],
+    "antenna": ["electronic antenna", "RF antenna", "wireless antenna"], "router": ["WiFi router", "wireless network router", "home router"], "network switch": ["Ethernet network switch", "network switch device", "LAN switch"],
+    "webcam": ["USB webcam", "computer webcam", "web camera"], "computer monitor": ["computer monitor", "LCD computer monitor", "desktop display monitor"], "smartphone": ["smartphone", "mobile phone", "smart phone device"]
+}
+
+# Dataset names used by the current trained model -> canonical names used by the knowledge base.
+YOLO_ALIASES = {
+    "Arduino_UNO_R3":"Arduino UNO", "Arduino_Nano":"Arduino Nano", "Arduino_Mega_2560":"Arduino Mega",
+    "ESP32_DevKit":"ESP32 development board", "ESP8266_NodeMCU":"ESP8266 development board", "Raspberry_Pi_4":"Raspberry Pi single board computer",
+    "Raspberry_Pi_Pico":"Raspberry Pi single board computer", "Breadboard":"breadboard", "Breadboard_Power_Supply":"breadboard power supply module",
+    "Resistor":"resistor", "Potentiometer":"potentiometer", "Electrolytic_Capacitor":"electrolytic capacitor", "LED":"LED",
+    "Diode_1N4007":"diode", "Transistor":"transistor", "Relay_Module_1_Channel":"relay module", "Relay_Module_4_Channel":"relay module",
+    "LCD_16x2":"LCD display", "LCD_20x4":"LCD display", "OLED_I2C":"OLED display", "TFT_LCD":"LCD display", "TM1637_7Segment":"7 segment display",
+    "MAX7219_LED_Matrix":"LED matrix", "DC_Gear_Motor":"DC motor", "SG90_Servo_Motor":"servo motor", "NEMA17_Stepper_Motor":"stepper motor", "Stepper_28BYJ48":"stepper motor",
+    "Buzzer":"buzzer", "Push_Button":"push button", "Joystick_Module":"joystick module", "IR_Obstacle_Sensor":"IR receiver", "HC_SR04":"ultrasonic sensor",
+    "PIR_Motion_Sensor":"PIR motion sensor", "DHT11":"temperature sensor", "DHT22":"temperature sensor", "BMP280":"temperature sensor", "Rain_Sensor_Module":"rain sensor" if False else "humidity sensor",
+    "MQ2_Gas_Sensor":"gas sensor", "Soil_Moisture_Sensor":"soil moisture sensor", "MPU6050":"accelerometer", "Color_Sensor_TCS3200":"color sensor",
+    "RFID_RC522":"RFID reader", "GPS_NEO6M":"GPS module", "HC05_Bluetooth_Module":"Bluetooth module", "SIM800L_GSM_Module":"GSM module", "LoRa_RA02":"LoRa module",
+    "ESP32_CAM":"camera module", "L298N_Motor_Driver":"motor driver module", "L293D_Motor_Driver":"motor driver module", "TP4056_Battery_Charger":"charger",
+    "18650_Lithium_Battery":"battery", "9V_Battery":"battery", "Multimeter":"multimeter", "Oscilloscope":"oscilloscope", "Soldering_Iron":"soldering iron", "Jumper_Wires":"jumper wires",
+    "555_Timer_IC":"integrated circuit IC chip", "Fingerprint_Sensor":"fingerprint sensor", "Sound_Sensor_Module":"sound sensor module", "TFT_LCD":"LCD display"
+}
+
+try:
+    DETAILS_DB = json.loads(DETAILS.read_text(encoding="utf-8"))
+except Exception as exc:
+    raise RuntimeError(f"Cannot read details.json: {exc}") from exc
+
+
+def canonical_name(name):
+    return YOLO_ALIASES.get(str(name), str(name))
+
+
+def detail_for(name):
+    key = canonical_name(name)
+    return DETAILS_DB.get(key, DETAILS_DB.get(name, DETAILS_DB.get("default", {})))
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def db_conn():
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with db_conn() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS analyses (
+            id TEXT PRIMARY KEY, created_at TEXT NOT NULL, filename TEXT NOT NULL,
+            image_path TEXT NOT NULL, result_name TEXT NOT NULL, result_name_th TEXT NOT NULL,
+            confidence REAL NOT NULL, confidence_kind TEXT NOT NULL, level TEXT NOT NULL,
+            engine TEXT NOT NULL, quality_json TEXT NOT NULL, detections_json TEXT NOT NULL,
+            analysis_json TEXT NOT NULL
+        )""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_analyses_created ON analyses(created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_analyses_name ON analyses(result_name)")
+
+
+def quality_check(image):
+    w, h = image.size
+    gray = ImageOps.grayscale(image).resize((min(512, w), min(512, h)))
+    stat = ImageStat.Stat(gray)
+    brightness = float(stat.mean[0])
+    contrast = float(stat.stddev[0])
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    edge_std = float(ImageStat.Stat(edges).stddev[0])
+    warnings, tips = [], []
+    if w < 320 or h < 240:
+        warnings.append("ความละเอียดต่ำ")
+        tips.append("ถ่ายภาพให้มีความละเอียดอย่างน้อย 320×240 และควรเห็นรายละเอียดของอุปกรณ์ชัดเจน")
+    if brightness < 45:
+        warnings.append("ภาพมืดเกินไป")
+        tips.append("เพิ่มแสงและหลีกเลี่ยงเงาทับบนอุปกรณ์")
+    elif brightness > 225:
+        warnings.append("ภาพสว่างเกินไป")
+        tips.append("ลดแสงสะท้อนและหลีกเลี่ยงการถ่ายย้อนแสง")
+    if contrast < 18:
+        warnings.append("คอนทราสต์ต่ำ")
+        tips.append("จัดแสงให้ตัวอุปกรณ์แยกจากพื้นหลังได้ชัด")
+    if edge_std < 7.0:
+        warnings.append("ภาพอาจเบลอ")
+        tips.append("ถือกล้องให้นิ่งและโฟกัสที่ตัวอุปกรณ์")
+    return {
+        "ok": not warnings,
+        "width": w, "height": h, "brightness": round(brightness, 1), "contrast": round(contrast, 1),
+        "sharpness_indicator": round(edge_std, 2), "warnings": warnings, "tips": tips
+    }
+
+
+def quality_for_storage(q):
+    return {k:v for k,v in q.items() if k not in {"tips"}}
+
+
+def level_for_yolo(score):
+    if score >= 0.90: return "High Confidence"
+    if score >= 0.70: return "Medium Confidence"
+    return "Needs Review"
+
+
+def level_for_clip(margin, similarity):
+    if similarity < CLIP_MIN_SIM or margin < CLIP_MIN_MARGIN: return "Needs Review"
+    if margin >= 0.025 and similarity >= 0.24: return "High Confidence"
+    return "Medium Confidence"
+
+
+def circuit_analysis(detections):
+    names = [canonical_name(d.get("name")) for d in detections]
+    unique = []
+    for n in names:
+        if n not in unique: unique.append(n)
+    notes=[]
+    low=[n.lower() for n in unique]
+    if "LED" in unique and "resistor" not in unique:
+        notes.append({"level":"check","text":"พบ LED แต่ไม่พบ resistor ในผลตรวจจับ — ควรตรวจสอบว่ามีตัวต้านทานจำกัดกระแสหรือไม่"})
+    if ("servo motor" in unique or "DC motor" in unique or "stepper motor" in unique) and "motor driver module" not in unique:
+        notes.append({"level":"check","text":"พบมอเตอร์โดยไม่พบ motor driver — ควรตรวจสอบวงจรขับและกระแสของโหลด"})
+    if "Arduino UNO" in unique or "ESP32 development board" in unique or "ESP8266 development board" in unique:
+        notes.append({"level":"info","text":"พบไมโครคอนโทรลเลอร์บอร์ด ควรตรวจสอบ VCC/GND และแรงดันของโมดูลที่ต่อร่วม"})
+    if not detections:
+        notes.append({"level":"info","text":"ยังไม่มีข้อมูลตำแหน่ง/การเชื่อมต่อเพียงพอสำหรับยืนยัน topology ของวงจร"})
+    return {
+        "component_count": len(detections),
+        "unique_components": unique,
+        "possible_connections": [],
+        "notes": notes,
+        "disclaimer": "การวิเคราะห์การเชื่อมต่อจากภาพเป็นการประเมินเบื้องต้น ไม่ใช่การยืนยันทางไฟฟ้า"
+    }
+
+
+class AIEngine:
+    def __init__(self):
+        self.model=None; self.processor=None; self.model_name=None; self.text_features=None; self.class_prompts=None
+        self.detector=None; self.detector_path=None
+        self.lock=threading.Lock(); self.loading=False; self.error=None
+        self.device="cuda" if torch.cuda.is_available() else "cpu"
+
+    @property
+    def ready(self):
+        return bool(OPENAI_API_KEY) or self.detector is not None or (self.model is not None and self.text_features is not None)
+
+    def load_detector(self):
+        if YOLO is None: return
+        for candidate in (CUSTOM_MODEL, CUSTOM_MODEL_ALT):
+            if candidate.exists():
+                try:
+                    self.detector=YOLO(str(candidate)); self.detector_path=str(candidate); return
+                except Exception as exc:
+                    self.error=f"Custom YOLO failed: {exc}"
+
+    def load(self):
+        if self.ready or self.loading: return
+        self.loading=True; self.error=None
+        self.load_detector()
+        # A custom model is enough to serve the app. CLIP is a fallback/second stage, not a hard dependency.
+        try:
+            from transformers import CLIPModel, CLIPProcessor
+            last=None
+            for name in (PRIMARY_MODEL, FALLBACK_MODEL):
+                try:
+                    proc=CLIPProcessor.from_pretrained(name)
+                    model=CLIPModel.from_pretrained(name).to(self.device); model.eval()
+                    self.processor,self.model,self.model_name=proc,model,name
+                    self.prepare_text_features(); last=None; break
+                except Exception as exc: last=exc
+            if last and self.detector is None: self.error=str(last)
+        except Exception as exc:
+            if self.detector is None: self.error=str(exc)
+        finally:
+            self.loading=False
+
+    def prepare_text_features(self):
+        prompts=[]; owners=[]
+        for cls in CLASSES:
+            for p in PROMPTS.get(cls,[cls]):
+                prompts.extend([f"a photo of {p}", f"a clear product photo of {p}", f"a real electronic device: {p}"])
+                owners.extend([cls]*3)
+        with torch.inference_mode():
+            inp=self.processor(text=prompts,return_tensors="pt",padding=True)
+            inp={k:v.to(self.device) for k,v in inp.items()}
+            feat=self.model.get_text_features(**inp); feat=feat/feat.norm(dim=-1,keepdim=True).clamp_min(1e-12)
+        self.text_features=feat; self.class_prompts=owners
+
+    @staticmethod
+    def views(image):
+        a=ImageOps.contain(image,(768,768))
+        b=ImageEnhance.Contrast(a).enhance(1.06)
+        c=ImageEnhance.Sharpness(a).enhance(1.10)
+        return [a,b,c]
+
+    def yolo_analyze(self,image):
+        if self.detector is None: return None
+        # Test-time augmentation improves robustness to scale/lighting/viewpoint changes.
+        results=self.detector.predict(
+            source=image, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, iou=0.50, max_det=20,
+            augment=True, verbose=False
+        )
+        if not results: return None
+        result=results[0]; names=result.names; detections=[]
+        if result.boxes is not None and len(result.boxes)>0:
+            for box,conf,cls_id in zip(result.boxes.xyxy.tolist(),result.boxes.conf.tolist(),result.boxes.cls.tolist()):
+                raw=names.get(int(cls_id),str(int(cls_id))) if isinstance(names,dict) else names[int(cls_id)]
+                canonical=canonical_name(raw)
+                detections.append({"name":canonical,"raw_name":str(raw),"score":round(float(conf),4),"box":[round(float(x),1) for x in box]})
+        detections.sort(key=lambda x:x["score"],reverse=True)
+        if not detections: return None
+        top=detections[0]
+        unknown=top["score"] < YOLO_MIN_ACCEPT
+        return {
+            "engine":"custom-yolo","detector_path":self.detector_path,"detections":detections,
+            "top":(top["name"],top["score"]),"is_unknown":unknown,
+            "raw_top":top["score"],"raw_margin":(top["score"]-detections[1]["score"]) if len(detections)>1 else top["score"]
+        }
+
+    def clip_analyze(self,image):
+        if self.model is None or self.text_features is None: return None
+        with self.lock, torch.inference_mode():
+            scores=[]
+            for view in self.views(image):
+                inp=self.processor(images=view,return_tensors="pt"); inp={k:v.to(self.device) for k,v in inp.items()}
+                feat=self.model.get_image_features(**inp); feat=feat/feat.norm(dim=-1,keepdim=True).clamp_min(1e-12)
+                logits=(feat@self.text_features.T)[0]
+                grouped={c:[] for c in CLASSES}
+                for s,owner in zip(logits.tolist(),self.class_prompts): grouped[owner].append(s)
+                scores.append(torch.tensor([sum(grouped[c])/len(grouped[c]) for c in CLASSES],device=self.device))
+            mean=torch.stack(scores).mean(dim=0)
+            vals,inds=torch.topk(mean,k=min(TOP_K,len(CLASSES)))
+            candidates=[(CLASSES[int(i)],float(v)) for v,i in zip(vals,inds)]
+            raw=[float(v) for v in vals]; top=raw[0] if raw else 0.0; margin=(raw[0]-raw[1]) if len(raw)>1 else top
+            # CLIP cosine similarity is not a calibrated probability. Keep it explicitly as an estimated score.
+            unknown=top<CLIP_MIN_SIM or margin<CLIP_MIN_MARGIN
+            return {"engine":"clip-zero-shot","detector_path":None,"detections":[],"top":candidates[0] if candidates else ("Unknown",0.0),"candidates":candidates,"raw_top":top,"raw_margin":margin,"is_unknown":unknown}
+
+    @staticmethod
+    def _vision_image_data(image):
+        # Keep the upload local to this process; only the encoded image is sent to the configured Vision API.
+        img = ImageOps.exif_transpose(image).convert("RGB")
+        img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def vision_analyze(self, image):
+        if not OPENAI_API_KEY:
+            return None
+        labels = "\n".join(f"- {c}" for c in CLASSES)
+        prompt = f"""You are the primary visual inspection system for an electronics identification app.
+Look carefully at the uploaded image itself. Identify the electronic component/device, not the background or text alone.
+Use the allowed labels below and choose the closest label only when visual evidence supports it. Do not invent a label.
+If several separate components are visible, list each distinct component.
+For boards/modules, use visible layout, connector count, chip shape, markings and physical form; do not rely only on color.
+If the image is too unclear, return Unknown.
+
+Allowed labels:
+{labels}
+
+Return ONLY valid JSON in this exact shape:
+{{"top":"one allowed label or Unknown","confidence":0.0,"candidates":[{{"name":"allowed label","confidence":0.0}}],"detections":[{{"name":"allowed label","confidence":0.0}}],"reason":"short visual evidence"}}
+Confidence must be a number from 0 to 1. Never claim certainty from text that is not actually visible.
+"""
+        payload = {
+            "model": OPENAI_VISION_MODEL,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": prompt},
+                {"type": "input_image", "image_url": self._vision_image_data(image), "detail": "high"}
+            ]}]
+        }
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=OPENAI_VISION_TIMEOUT) as response:
+                data=json.loads(response.read().decode("utf-8"))
+            text=str(data.get("output_text", "")).strip()
+            if not text:
+                # Defensive extraction for Responses API payload variants.
+                chunks=[]
+                for item in data.get("output", []):
+                    for content in item.get("content", []):
+                        if content.get("type") in {"output_text", "text"} and content.get("text"):
+                            chunks.append(content["text"])
+                text="\n".join(chunks).strip()
+            text=re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I|re.S).strip()
+            obj=json.loads(text)
+            top=canonical_name(str(obj.get("top", "Unknown")))
+            if top not in CLASSES: top="Unknown"
+            confidence=max(0.0,min(1.0,float(obj.get("confidence",0.0))))
+            candidates=[]
+            for item in obj.get("candidates",[]):
+                name=canonical_name(str(item.get("name","")))
+                if name in CLASSES:
+                    candidates.append((name,max(0.0,min(1.0,float(item.get("confidence",0.0))))))
+            if top != "Unknown" and not any(n==top for n,_ in candidates): candidates.insert(0,(top,confidence))
+            candidates=candidates[:TOP_K]
+            detections=[]
+            for item in obj.get("detections",[]):
+                name=canonical_name(str(item.get("name","")))
+                if name in CLASSES:
+                    detections.append({"name":name,"score":round(max(0.0,min(1.0,float(item.get("confidence",0.0)))),4)})
+            if not detections and top != "Unknown": detections=[{"name":top,"score":round(confidence,4)}]
+            return {"engine":"vision-api","detector_path":None,"detections":detections,"top":(top,confidence),
+                    "is_unknown":top=="Unknown" or confidence < 0.55,"raw_top":confidence,
+                    "raw_margin":(candidates[0][1]-candidates[1][1]) if len(candidates)>1 else confidence,
+                    "candidates":candidates,"reason":str(obj.get("reason",""))[:500],"model":OPENAI_VISION_MODEL}
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            self.error=f"Vision API unavailable; using local models: {exc}"
+            return None
+        except Exception as exc:
+            self.error=f"Vision API response invalid; using local models: {exc}"
+            return None
+
+    def analyze(self,image):
+        # Stage 1: multimodal Vision sees the whole image. Local YOLO/CLIP remain fallbacks
+        # so the app still works when no API key/network is available.
+        try:
+            v=self.vision_analyze(image)
+            if v and not v.get("is_unknown"):
+                return v
+        except Exception as exc:
+            self.error=f"Vision inference failed; trying local models: {exc}"
+        try:
+            y=self.yolo_analyze(image)
+            if y and not y.get("is_unknown"):
+                return y
+        except Exception as exc:
+            self.error=f"YOLO inference failed; using CLIP fallback: {exc}"
+        c=self.clip_analyze(image)
+        if c: return c
+        # If every model is uncertain, return the best available result rather than hiding evidence.
+        try:
+            v=self.vision_analyze(image)
+            if v: return v
+        except Exception:
+            pass
+        try:
+            y=self.yolo_analyze(image)
+            if y: return y
+        except Exception:
+            pass
+        raise RuntimeError(self.error or "No local AI model is available")
+
+engine=AIEngine()
+threading.Thread(target=engine.load,name="ai-loader",daemon=True).start()
+
+app=Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"]=MAX_IMAGE_BYTES
+# Reject pathological image dimensions before model inference.
+Image.MAX_IMAGE_PIXELS = 25_000_000
+analyze_lock=threading.Lock()
+init_db()
+
+
+def is_allowed(filename):
+    return bool(filename and "." in filename and filename.rsplit(".",1)[1].lower() in ALLOWED_EXT)
+
+
+def display_result(raw, quality):
+    name,score=raw.get("top",("Unknown",0.0)); name=canonical_name(name); engine_name=raw.get("engine","unknown")
+    if raw.get("is_unknown"):
+        level="Needs Review"
+        confidence_kind="estimated" if engine_name.startswith("clip") else "model"
+        d=detail_for(name)
+        return {"name":"Unknown","name_th":"ไม่สามารถระบุอุปกรณ์ได้อย่างมั่นใจ","type":"Unknown","description":"หลักฐานจากภาพยังไม่เพียงพอสำหรับการระบุชนิดอุปกรณ์","uses":"","specs":"","safety":"ลองถ่ายใกล้ขึ้น เพิ่มแสง ลดภาพเบลอ และให้เห็นอุปกรณ์เต็มชิ้น","score":round(score,4),"score_percent":round(max(0,min(1,score))*100,1),"level":level,"confidence_kind":confidence_kind,"margin":raw.get("raw_margin",0),"engine":engine_name,"detector_path":raw.get("detector_path"),"detections":raw.get("detections",[]),"reason":reason,"predictions":[]}
+    d=detail_for(name)
+    if engine_name=="custom-yolo": level=level_for_yolo(score); kind="model probability"
+    elif engine_name=="vision-api":
+        level="High Confidence" if score >= 0.85 else ("Medium Confidence" if score >= 0.65 else "Needs Review")
+        kind="vision model estimate"
+    else: level=level_for_clip(raw.get("raw_margin",0),score); kind="estimated ranking score"
+    candidates=raw.get("candidates",[(name,score)])
+    if engine_name=="custom-yolo": candidates=[(x["name"],x["score"]) for x in raw.get("detections",[])[:TOP_K]]
+    reason=raw.get("reason", "")
+    return {"name":name,"name_th":d.get("name_th",name),"type":d.get("type","Electronic Device"),"category":d.get("category","Other"),"description":d.get("description",""),"uses":d.get("uses",d.get("usage","")),"specs":d.get("specs",""),"safety":d.get("safety",""),"symbol":d.get("symbol",""),"unit":d.get("unit",""),"example":d.get("example",""),"score":round(float(score),4),"score_percent":round(max(0,min(1,float(score)))*100,1),"level":level,"confidence_kind":kind,"margin":raw.get("raw_margin"),"engine":engine_name,"detector_path":raw.get("detector_path"),"detections":raw.get("detections",[]),"reason":reason,"predictions":[{"name":canonical_name(n),"name_th":detail_for(n).get("name_th",canonical_name(n)),"score":round(float(s),4),"score_percent":round(max(0,min(1,float(s)))*100,1)} for n,s in candidates[:TOP_K]]}
+
+
+def save_analysis(result, image_path, filename, quality):
+    aid=datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    created=now_iso(); circuit=circuit_analysis(result.get("detections",[]))
+    result["circuit_analysis"]=circuit; result["created_at"]=created; result["id"]=aid
+    with db_conn() as c:
+        c.execute("INSERT INTO analyses VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,?)",(
+            aid,created,filename,str(image_path.relative_to(BASE)),result["name"],result["name_th"],result["score_percent"],result["confidence_kind"],result["level"],result["engine"],json.dumps(quality_for_storage(quality),ensure_ascii=False),json.dumps(result.get("detections",[]),ensure_ascii=False),json.dumps(result,ensure_ascii=False)))
+    result["image_url"]="/uploads/"+image_path.name; return result
+
+
+def api_error(message,status=400,detail=None):
+    payload={"success":False,"error":message}
+    if detail: payload["detail"]=detail
+    return jsonify(payload),status
+
+@app.get("/")
+def index(): return render_template("index.html")
+
+@app.get("/api/status")
+def status():
+    return jsonify({"success":True,"ready":engine.ready,"loading":engine.loading,"error":engine.error,"model":engine.model_name or (OPENAI_VISION_MODEL if OPENAI_API_KEY else ("custom-yolo" if engine.detector else PRIMARY_MODEL)),"device":engine.device,"classes":len(CLASSES),"custom_model":str(engine.detector_path) if engine.detector_path else None})
+
+@app.get("/api/components")
+def components():
+    q=request.args.get("q","").strip().lower(); category=request.args.get("category","all").strip().lower(); items=[]
+    for name in CLASSES:
+        d=detail_for(name); item={"name":name,"name_th":d.get("name_th",name),"type":d.get("type","Electronic Device"),"category":d.get("category","Other"),"description":d.get("description",""),"uses":d.get("uses","")}
+        if q and q not in name.lower() and q not in item["name_th"].lower(): continue
+        if category!="all" and item["category"].lower()!=category: continue
+        items.append(item)
+    cats=sorted({x["category"] for x in items})
+    return jsonify({"success":True,"items":items,"total":len(items),"categories":cats})
+
+@app.get("/api/components/<path:name>")
+def component_detail(name):
+    key=canonical_name(name)
+    if key not in CLASSES and key not in DETAILS_DB: return api_error("ไม่พบอุปกรณ์ในคลัง",404)
+    d=detail_for(key); return jsonify({"success":True,"item":{"name":key,**d}})
+
+@app.get("/api/history")
+def history():
+    q=request.args.get("q","").strip().lower(); period=request.args.get("period","all")
+    sql="SELECT * FROM analyses WHERE 1=1"; args=[]
+    if q: sql += " AND (lower(result_name) LIKE ? OR lower(result_name_th) LIKE ?)"; args += [f"%{q}%",f"%{q}%"]
+    if period!="all":
+        seconds={"today":86400,"week":7*86400,"month":31*86400}.get(period)
+        if seconds is None: return api_error("ช่วงเวลาที่ค้นหาไม่ถูกต้อง",400)
+        sql += " AND created_at >= ?"; args.append((datetime.now(timezone.utc)-timedelta(seconds=seconds)).isoformat(timespec="seconds"))
+    sql += " ORDER BY created_at DESC LIMIT 200"
+    with db_conn() as c: rows=c.execute(sql,args).fetchall()
+    items=[]
+    for r in rows:
+        items.append({"id":r["id"],"image_url":"/"+r["image_path"].replace('\\','/'),"component":r["result_name"],"component_th":r["result_name_th"],"confidence":r["confidence"],"level":r["level"],"engine":r["engine"],"created_at":r["created_at"]})
+    return jsonify({"success":True,"items":items,"total":len(items)})
+
+@app.get("/api/history/<aid>")
+def history_detail(aid):
+    with db_conn() as c: r=c.execute("SELECT * FROM analyses WHERE id=?",(aid,)).fetchone()
+    if not r: return api_error("ไม่พบประวัติ",404)
+    result=json.loads(r["analysis_json"]); result.update({"success":True,"id":aid,"filename":r["filename"],"created_at":r["created_at"],"image_url":"/"+r["image_path"].replace('\\','/'),"quality":json.loads(r["quality_json"])})
+    return jsonify(result)
+
+@app.delete("/api/history/<aid>")
+def history_delete(aid):
+    with db_conn() as c:
+        r=c.execute("SELECT image_path FROM analyses WHERE id=?",(aid,)).fetchone()
+        if not r: return api_error("ไม่พบประวัติ",404)
+        c.execute("DELETE FROM analyses WHERE id=?",(aid,))
+    (BASE/r["image_path"]).unlink(missing_ok=True)
+    return jsonify({"success":True,"deleted":aid})
+
+@app.get("/api/dashboard")
+def dashboard():
+    with db_conn() as c:
+        total=c.execute("SELECT COUNT(*) FROM analyses").fetchone()[0]
+        avg=c.execute("SELECT AVG(confidence) FROM analyses").fetchone()[0]
+        most=c.execute("SELECT result_name,result_name_th,COUNT(*) n FROM analyses WHERE result_name!='Unknown' GROUP BY result_name ORDER BY n DESC LIMIT 1").fetchone()
+        recent=c.execute("SELECT id,created_at,result_name,result_name_th,confidence,level,engine,image_path FROM analyses ORDER BY created_at DESC LIMIT 8").fetchall()
+        counts=c.execute("SELECT result_name,result_name_th,COUNT(*) n FROM analyses WHERE result_name!='Unknown' GROUP BY result_name ORDER BY n DESC LIMIT 8").fetchall()
+    return jsonify({"success":True,"total_analyses":total,"average_confidence":round(avg or 0,1),"most_detected":{"name":most[0],"name_th":most[1],"count":most[2]} if most else None,"detected_components":sum(x[2] for x in counts),"top_components":[dict(x) for x in counts],"recent":[{**dict(x),"image_url":"/"+x["image_path"].replace('\\','/')} for x in recent]})
+
+@app.post("/api/analyze")
+def analyze():
+    if not analyze_lock.acquire(blocking=False): return api_error("มีการวิเคราะห์อื่นกำลังทำงานอยู่ กรุณารอสักครู่",429)
+    path=None
+    try:
+        if "image" not in request.files: return api_error("กรุณาเลือกภาพก่อน",400)
+        f=request.files["image"]
+        if not f.filename or not is_allowed(f.filename): return api_error("รองรับเฉพาะ JPG, JPEG, PNG, WEBP และ BMP",400)
+        if not engine.ready: return api_error("AI ยังไม่พร้อม",503,{"loading":engine.loading,"detail":engine.error})
+        safe=secure_filename(f.filename)
+        if not safe: return api_error("ชื่อไฟล์ไม่ถูกต้อง",400)
+        stamp=datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f"); path=UPLOAD_DIR/f"{stamp}_{safe}"
+        f.save(path)
+        try:
+            with Image.open(path) as im:
+                fmt=im.format
+                if fmt not in ALLOWED_FORMATS: raise ValueError("invalid format")
+                im.verify()
+            with Image.open(path) as im: image=ImageOps.exif_transpose(im).convert("RGB")
+        except Exception:
+            path.unlink(missing_ok=True); return api_error("ไฟล์ภาพเสียหายหรือชนิดไฟล์ไม่ถูกต้อง",400)
+        quality=quality_check(image)
+        raw=engine.analyze(image)
+        result=display_result(raw,quality); result["quality"]=quality
+        result=save_analysis(result,path,safe,quality)
+        return jsonify({"success":True,**result})
+    except Exception as exc:
+        if path and path.exists(): path.unlink(missing_ok=True)
+        app.logger.error("analyze failed: %s\n%s",exc,traceback.format_exc())
+        return api_error("เกิดข้อผิดพลาดระหว่างวิเคราะห์ภาพ",500)
+    finally: analyze_lock.release()
+
+@app.get("/uploads/<path:filename>")
+def uploads(filename): return send_from_directory(UPLOAD_DIR,filename)
+
+@app.errorhandler(413)
+def too_large(_): return api_error("Image is too large. Maximum size is 12 MB.",413)
+
+@app.errorhandler(500)
+def server_error(_): return api_error("เซิร์ฟเวอร์เกิดข้อผิดพลาด",500)
+
+if __name__=="__main__":
+    host=os.getenv("HOST","127.0.0.1"); port=int(os.getenv("PORT","5000")); app.run(host=host,port=port,debug=False)

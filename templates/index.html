@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07111f">
+<title>Electronics AI · แพลตฟอร์มวิเคราะห์อุปกรณ์อิเล็กทรอนิกส์</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='6') }}">
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar" id="sidebar" aria-label="เมนูหลัก">
+    <div class="brand-row">
+      <a class="brand" href="#" aria-label="Electronics AI หน้าแรก"><span class="brand-mark">⚡</span><span><strong>Electronics AI</strong><small>วิเคราะห์ภาพด้วย AI</small></span></a>
+      <button class="icon-btn sidebar-close" id="sidebarClose" aria-label="ปิดเมนู">×</button>
+    </div>
+    <div class="workspace-label">พื้นที่ทำงาน</div>
+    <nav class="side-nav">
+      <button class="side-link active" data-tab="dashboard"><span class="nav-icon">⌂</span><span>แดชบอร์ด</span></button>
+      <button class="side-link" data-tab="analyze"><span class="nav-icon">◈</span><span>วิเคราะห์ด้วย AI</span><em>NEW</em></button>
+      <button class="side-link" data-tab="history"><span class="nav-icon">◷</span><span>ประวัติการวิเคราะห์</span></button>
+      <button class="side-link" data-tab="library"><span class="nav-icon">▦</span><span>คลังอุปกรณ์</span></button>
+      <button class="side-link" data-tab="models"><span class="nav-icon">◉</span><span>ศูนย์โมเดล AI</span></button>
+    </nav>
+    <div class="sidebar-spacer"></div>
+    <button class="side-link muted-link" data-tab="about"><span class="nav-icon">ⓘ</span><span>เกี่ยวกับโครงการ</span></button>
+    <button class="side-link muted-link" id="membersBtn"><span class="nav-icon">👥</span><span>สมาชิกผู้จัดทำ</span></button>
+    <div class="side-health"><span id="sideHealthDot"></span><div><b id="sideHealth">กำลังตรวจสอบ AI</b><small>ทำงานบนเครื่องเป็นหลัก</small></div></div>
+  </aside>
+
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+  <div class="shell">
+    <header class="topbar">
+      <div class="topbar-left"><button class="icon-btn mobile-menu" id="mobileMenu" aria-label="เปิดเมนู">☰</button><div class="crumb"><span>พื้นที่ทำงาน</span><b id="pageTitle">แดชบอร์ด</b></div></div>
+      <div class="top-actions"><div class="status-pill"><span id="statusDot"></span><span id="statusText">กำลังตรวจสอบ AI...</span></div><button class="icon-btn theme-toggle" id="themeToggle" aria-label="สลับธีม">☾</button></div>
+    </header>
+
+    <main class="main-content">
+      <section id="dashboard" class="tab-panel active">
+        <div class="page-intro dashboard-intro"><div><p class="eyebrow">ภาพรวม · ฐานข้อมูลจริง</p><h1>วิเคราะห์ด้วย AI <span>ศูนย์ควบคุม</span></h1><p>ติดตามการวิเคราะห์ อัตราความมั่นใจ และการทำงานของโมเดลจากข้อมูลจริงในฐานข้อมูล</p></div><div class="intro-actions"><button class="secondary" id="refreshDashboard">↻ รีเฟรชข้อมูล</button><button class="primary" data-tab="analyze">+ วิเคราะห์ภาพใหม่</button></div></div>
+        <div class="stats-grid premium-stats">
+          <article class="stat-card"><span class="stat-icon">◎</span><div><small>การวิเคราะห์ทั้งหมด</small><b id="dashTotal">—</b><p id="dashToday">วันนี้ —</p></div></article>
+          <article class="stat-card"><span class="stat-icon">✦</span><div><small>คะแนนความมั่นใจเฉลี่ย</small><b id="dashAvg">—</b><p>ไม่ใช่ค่าความแม่นยำของระบบ</p></div></article>
+          <article class="stat-card"><span class="stat-icon">✓</span><div><small>อัตราการตรวจจับสำเร็จ</small><b id="dashSuccess">—</b><p id="dashLow">ความมั่นใจต่ำ —</p></div></article>
+          <article class="stat-card"><span class="stat-icon">⚡</span><div><small>เวลาประมวลผลเฉลี่ย</small><b id="dashTime">—</b><p id="dashMost">พบมากที่สุด —</p></div></article>
+        </div>
+        <div class="dashboard-grid analytics-grid">
+          <article class="card chart-card wide"><div class="card-head"><div><h3>กิจกรรมการวิเคราะห์</h3><p>จำนวนการวิเคราะห์ย้อนหลัง 14 วัน</p></div><span class="live-badge">ฐานข้อมูล</span></div><div id="dailyChart" class="bar-chart empty-chart"></div></article>
+          <article class="card chart-card"><div class="card-head"><div><h3>การกระจายคะแนนความมั่นใจ</h3><p>กระจายตามผลที่บันทึกไว้</p></div></div><div id="confidenceChart" class="distribution"></div></article>
+          <article class="card"><div class="card-head"><div><h3>อุปกรณ์ที่พบมากที่สุด</h3><p>อุปกรณ์ที่พบมากที่สุด</p></div></div><div id="topComponents" class="rank-list skeleton-zone"></div></article>
+          <article class="card"><div class="card-head"><div><h3>การวิเคราะห์ล่าสุด</h3><p>รายการล่าสุดจากเครื่องนี้</p></div><button class="text-btn" data-tab="history">ดูทั้งหมด</button></div><div id="recentAnalyses" class="recent-list skeleton-zone"></div></article>
+        </div>
+      </section>
+
+      <section id="analyze" class="tab-panel">
+        <div class="page-intro"><div><p class="eyebrow">ขั้นตอนการทำงานของ AI</p><h1>วิเคราะห์ <span>อุปกรณ์จากรูปภาพ</span></h1><p>ตรวจคุณภาพ → ตรวจจับหลายอุปกรณ์ → ตรวจสอบผล → ประเมินความมั่นใจ</p></div><div class="model-chip" id="modelState">กำลังโหลดโมเดล...</div></div>
+        <div class="pipeline"><span class="done">1 ตรวจภาพ</span><i></i><span>2 ตรวจจับ</span><i></i><span>3 ตรวจสอบ</span><i></i><span>4 สรุปผล</span></div>
+        <div class="upload-grid">
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="อัปโหลดภาพ">
+            <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" hidden>
+            <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+            <div class="upload-orb">↑</div><h2>ลากรูปภาพมาวางที่นี่</h2><p>ลากภาพมาวาง หรือเลือกจากอุปกรณ์ของคุณ</p>
+            <div class="upload-actions"><button class="primary" id="chooseBtn" type="button">เลือกภาพ</button><button class="secondary" id="cameraBtn" type="button">◉ เปิดกล้อง</button></div>
+            <div class="upload-meta"><span>JPG</span><span>PNG</span><span>WEBP</span><span>BMP</span><b>สูงสุด 12 MB</b></div>
+          </div>
+          <div class="preview-wrap hidden" id="previewWrap"><div class="preview-head"><div><small>รูปภาพที่เลือก</small><b id="previewName">ภาพที่เลือก</b></div><button id="clearBtn" class="icon-btn" aria-label="ล้างภาพ">×</button></div><div class="image-stage"><img id="preview" alt="ภาพตัวอย่างก่อนวิเคราะห์"></div><button id="analyzeBtn" class="primary full">✨ เริ่มวิเคราะห์ด้วย AI</button></div>
+          <aside class="upload-guide"><div class="guide-icon">💡</div><h3>ภาพที่ AI วิเคราะห์ได้ดี</h3><ul><li>เห็นอุปกรณ์ชัดเจนและมีแสงเพียงพอ</li><li>ถ่ายใกล้พอให้เห็นลักษณะสำคัญ</li><li>หลีกเลี่ยงภาพเบลอและแสงสะท้อน</li><li>ภาพหลายอุปกรณ์สามารถตรวจจับได้</li></ul><small>คำเตือนคุณภาพไม่จำเป็นต้องหยุดการวิเคราะห์</small></aside>
+        </div>
+        <div id="processing" class="processing-card hidden" aria-live="polite"></div>
+        <div id="quality" class="quality hidden"></div>
+        <div id="result" class="result hidden"></div>
+        <div id="error" class="error hidden" role="alert"></div>
+      </section>
+
+      <section id="history" class="tab-panel"><div class="page-intro compact"><div><p class="eyebrow">ข้อมูลของคุณ</p><h1>ประวัติ <span>การวิเคราะห์</span></h1><p>ค้นหา เปิดรายละเอียด วิเคราะห์ซ้ำ และจัดการผลลัพธ์ที่ผ่านมา</p></div></div><div class="card filter-card"><div class="filters"><label class="search-field">⌕<input id="historySearch" placeholder="ค้นหาชื่ออุปกรณ์..."></label><select id="historyPeriod"><option value="all">ทุกช่วงเวลา</option><option value="today">วันนี้</option><option value="week">7 วันที่ผ่านมา</option><option value="month">31 วันที่ผ่านมา</option></select></div></div><div id="historyList" class="history-list skeleton-zone"></div></section>
+
+      <section id="library" class="tab-panel"><div class="page-intro compact"><div><p class="eyebrow">คลังความรู้</p><h1>คลัง <span>อุปกรณ์</span></h1><p>ค้นหาอุปกรณ์ที่โมเดลรู้จักและเปิดดูรายละเอียดจากฐานข้อมูล</p></div><span class="model-chip" id="libraryCount"> รายการ</span></div><div class="library-toolbar"><label class="search-field grow">⌕<input id="librarySearch" placeholder="ค้นหา Arduino, Sensor, LED..."></label><select id="libraryCategory"><option value="all">ทุกประเภท</option></select><select id="librarySort"><option value="name">เรียงตามชื่อ</option><option value="category">เรียงตามประเภท</option></select></div><div id="libraryGrid" class="library-grid skeleton-zone"></div></section>
+
+      <section id="models" class="tab-panel"><div class="page-intro compact"><div><p class="eyebrow">จัดการโมเดล AI</p><h1>ศูนย์ <span>โมเดล AI</span></h1><p>สถานะโมเดลที่กำลังใช้งาน และความจำที่เกิดจาก feedback ของคุณ</p></div><button class="secondary" id="refreshModels">↻ รีเฟรช</button></div><div id="modelCards" class="model-cards skeleton-zone"></div><article class="card learning-center"><div class="card-head"><div><h3>🧠 ศูนย์การเรียนรู้จาก Feedback</h3><p>AI จะจำภาพที่คุณยืนยันได้ทันที และเก็บตัวอย่างที่แก้ไขไว้สำหรับพัฒนาโมเดลอย่างปลอดภัย</p></div><span class="live-badge">ONLINE MEMORY</span></div><div id="learningStats" class="learning-stats"><div class="empty-state">กำลังโหลดสถานะการเรียนรู้...</div></div><div class="note info">การกด “ทายถูก” จะจำภาพนั้นถาวรในฐานข้อมูล ส่วน “ทายผิด” จะจำคำตอบใหม่และส่งตัวอย่างเข้าคิวตรวจสอบก่อนฝึกโมเดล เพื่อป้องกันข้อมูลผิดทำให้โมเดลเสีย</div></article><div class="card model-note"><h3>รองรับการทำงานแบบออฟไลน์</h3><p>ระบบพยายามใช้ YOLO แบบกำหนดเอง จากไฟล์ในโปรเจกต์ก่อน ส่วน CLIP เป็นชั้นช่วยตรวจสอบและสามารถปิดการดาวน์โหลดโมเดลเมื่อไม่มีอินเทอร์เน็ต</p></div></section>
+
+      <section id="about" class="tab-panel"><div class="page-intro compact"><div><p class="eyebrow">เกี่ยวกับโครงการ</p><h1>สร้างเพื่อ <span>การเรียนรู้อิเล็กทรอนิกส์</span></h1><p>Electronics AI ใช้ AI วิเคราะห์ภาพเพื่อช่วยระบุอุปกรณ์และให้ข้อมูลประกอบการเรียนรู้</p></div></div><div class="about-grid"><article class="card"><h3>สิ่งที่ระบบทำ</h3><ul class="feature-list"><li>ตรวจจับอุปกรณ์หลายชิ้นในภาพเดียว</li><li>ตรวจสอบคุณภาพภาพก่อนวิเคราะห์</li><li>ใช้ YOLO และ CLIP ตามความพร้อมของโมเดล</li><li>เก็บประวัติและสถิติจากข้อมูลจริง</li></ul></article><article class="card"><h3>ข้อจำกัดสำคัญ</h3><p>คะแนนของโมเดลไม่ใช่ความแม่นยำของระบบ และการวิเคราะห์วงจรเป็นเพียงการประเมินจากสิ่งที่เห็นในภาพ ไม่ใช่การตรวจสอบการต่อวงจรจริง</p></article></div></section>
+    </main>
+    <footer>Electronics AI · ทำงานบนเครื่องเป็นหลัก · ควรตรวจสอบผลอีกครั้งเมื่อ AI มีความมั่นใจต่ำ</footer>
+  </div>
+</div>
+
+<nav class="bottom-nav" aria-label="เมนูมือถือ"><button data-tab="dashboard" class="active">⌂<span>หน้าหลัก</span></button><button data-tab="analyze">◈<span>วิเคราะห์</span></button><button data-tab="history">◷<span>ประวัติ</span></button><button data-tab="library">▦<span>คลัง</span></button></nav>
+<div class="modal-backdrop hidden" id="membersModal"><div class="members-modal" role="dialog" aria-modal="true" aria-labelledby="membersTitle"><div class="modal-head"><div><p class="eyebrow">สมาชิกผู้จัดทำ</p><h2 id="membersTitle">รายชื่อสมาชิกผู้จัดทำโครงการ</h2><p>แผนกเทคโนโลยีคอมพิวเตอร์ ปวส.1/1</p></div><button class="modal-close" id="membersClose" aria-label="ปิด">×</button></div><div class="members-grid"><article class="member-card"><img src="{{ url_for('static', filename='members/theerapat.jpg') }}" alt="นายธีรภัทร ฝ่อกระโทก"><div><h3>นายธีรภัทร ฝ่อกระโทก</h3><span>เลขที่ 19</span><p>แผนกเทคโนโลยีคอมพิวเตอร์ ปวส.1/1</p></div></article><article class="member-card"><img src="{{ url_for('static', filename='members/natthawut.jpg') }}" alt="นายณัฐวุติ ผมงาม"><div><h3>นายณัฐวุติ ผมงาม</h3><span>เลขที่ 7</span><p>แผนกเทคโนโลยีคอมพิวเตอร์ ปวส.1/1</p></div></article><article class="member-card"><img src="{{ url_for('static', filename='members/thanwa.jpg') }}" alt="นายธันวา พาพินิจ"><div><h3>นายธันวา พาพินิจ</h3><span>เลขที่ 18</span><p>แผนกเทคโนโลยีคอมพิวเตอร์ ปวส.1/1</p></div></article></div></div></div><div id="toastRegion" class="toast-region" aria-live="polite"></div>
+<div id="modalRoot" class="modal-backdrop hidden" role="presentation"><div class="detail-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="icon-btn modal-close" id="modalClose" aria-label="ปิด">×</button><div id="modalContent"></div></div></div>
+<div id="confirmModal" class="confirm-backdrop hidden"><div class="confirm-card" role="dialog" aria-modal="true"><h3 id="confirmTitle">ยืนยันการทำรายการ</h3><p id="confirmText"></p><div><button id="confirmCancel" class="secondary">ยกเลิก</button><button id="confirmOk" class="primary">ยืนยัน</button></div></div></div>
+<script src="{{ url_for('static', filename='app.js', v='6') }}"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+path: custom_dataset
+train: images/train
+val: images/val
+
+names:
+  0: Arduino_Nano
+  1: LED
+  2: BMP280
+  3: Diode_1N4007
+  4: Electrolytic_Capacitor
+  5: Relay_Module_1_Channel
+  6: IR_Obstacle_Sensor
+  7: Sound_Sensor_Module
+  8: PIR_Motion_Sensor
+  9: Jumper_Wires
+  10: SIM800L_GSM_Module
+  11: LM2596_Buck_Converter
+  12: NEMA17_Stepper_Motor
+  13: LCD_16x2
+  14: ESP8266_NodeMCU
+  15: Rain_Sensor_Module
+  16: Raspberry_Pi_Pico
+  17: Transistor
+  18: HC05_Bluetooth_Module
+  19: Fingerprint_Sensor
+  20: Arduino_UNO_R3
+  21: Color_Sensor_TCS3200
+  22: SG90_Servo_Motor
+  23: DC_Gear_Motor
+  24: Potentiometer
+  25: Raspberry_Pi_4
+  26: Relay_Module_4_Channel
+  27: GPS_NEO6M
+  28: Push_Button
+  29: OLED_I2C
+  30: 18650_Lithium_Battery
+  31: BBC_microbit
+  32: 9V_Battery
+  33: MPU6050
+  34: Breadboard_Power_Supply
+  35: Resistor
+  36: ESP32_DevKit
+  37: ESP32_CAM
+  38: Multimeter
+  39: HC_SR04
+  40: TFT_LCD
+  41: TP4056_Battery_Charger
+  42: MAX7219_LED_Matrix
+  43: 555_Timer_IC
+  44: Joystick_Module
+  45: RFID_RC522
+  46: Buzzer
+  47: DHT22
+  48: TM1637_7Segment
+  49: L298N_Motor_Driver
+  50: Arduino_Mega_2560
+  51: Oscilloscope
+  52: Breadboard
+  53: DHT11
+  54: Soldering_Iron
+  55: Solenoid
+  56: Soil_Moisture_Sensor
+  57: LoRa_RA02
+  58: Stepper_28BYJ48
+  59: LCD_20x4
+  60: MQ2_Gas_Sensor
+  61: L293D_Motor_Driver
