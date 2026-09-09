@@ -1,0 +1,18 @@
+{
+  "created_at": "2026-09-09T15:41:24+00:00",
+  "analysis_id": "20260909_154055_650926",
+  "label": "resistor",
+  "raw_label": "Resistor",
+  "class_id": 35,
+  "image": "data\\learning_queue\\images\\20260909_154124_296425_20260909_154055_650926.jpg",
+  "label_file": "data\\learning_queue\\labels\\20260909_154124_296425_20260909_154055_650926.txt",
+  "source_image": "uploads\\20260909_154041_421247_R0131895-01.webp",
+  "requires_annotation": false,
+  "source_box": [
+    0.0,
+    0.0,
+    998.0,
+    562.0
+  ],
+  "instruction": "Review before model training. Samples without label_file require manual bounding-box annotation."
+}

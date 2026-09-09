@@ -1,28 +1,14 @@
-# Python
 .venv/
-venv/
 __pycache__/
 *.pyc
-*.pyo
+uploads/*
+data/history.json
+runs/
 *.log
-
-# Local environment
+*.sqlite3
 .env
 .env.*
+!.env.example
 
-# Runtime/user-generated files
-uploads/*
-data/*.sqlite3
-data/*.sqlite3-shm
-data/*.sqlite3-wal
-data/history.json
-data/learning_queue/images/*
-data/learning_queue/labels/*
-data/learning_queue/meta/*
-
-# Training output is not needed in production because models/best.pt is canonical.
-runs/
-
-# Keep the production model tracked.
-!models/
-!models/best.pt
+# Gemini/Railway
+.env.railway.example

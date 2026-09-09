@@ -5,9 +5,10 @@ import sqlite3
 import threading
 import traceback
 import hashlib
-import logging
 import shutil
 import struct
+import io
+import difflib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -23,32 +24,23 @@ except Exception:
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except Exception:
+    genai = None
+    genai_types = None
+
 BASE = Path(__file__).resolve().parent
 DETAILS = BASE / "details.json"
-UPLOAD_DIR = Path(os.getenv("ELECTRONICS_AI_UPLOAD_DIR", str(BASE / "uploads"))).expanduser()
-DATA_DIR = Path(os.getenv("ELECTRONICS_AI_DATA_DIR", str(BASE / "data"))).expanduser()
+UPLOAD_DIR = BASE / "uploads"
+DATA_DIR = BASE / "data"
 DB_FILE = DATA_DIR / "electronics_ai.sqlite3"
-
-# Railway/local deployment:
-# The canonical production model is models/best.pt. The runs/... paths are
-# retained as compatibility fallbacks for the existing project structure.
-CUSTOM_MODEL_ENV = os.getenv("ELECTRONICS_AI_MODEL_PATH", "").strip()
-CUSTOM_MODEL = BASE / "models" / "best.pt"
-CUSTOM_MODEL_ALT = BASE / "runs" / "electronics" / "weights" / "best.pt"
-CUSTOM_MODEL_ALT2 = BASE / "runs" / "detect" / "runs" / "electronics" / "weights" / "best.pt"
-
-# CLIP is optional. It is NOT downloaded or loaded unless explicitly enabled.
+CUSTOM_MODEL = BASE / "runs" / "electronics" / "weights" / "best.pt"
+CUSTOM_MODEL_ALT = BASE / "models" / "best.pt"
+CUSTOM_MODEL_ALT2 = BASE / "weights" / "best.pt"
 PRIMARY_MODEL = os.getenv("ELECTRONICS_AI_MODEL", "openai/clip-vit-large-patch14")
 FALLBACK_MODEL = os.getenv("ELECTRONICS_AI_FALLBACK", "openai/clip-vit-base-patch32")
-ENABLE_CLIP_FALLBACK = os.getenv("ELECTRONICS_AI_ENABLE_CLIP_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
-ALLOW_CLIP_DOWNLOAD = os.getenv("ELECTRONICS_AI_ALLOW_MODEL_DOWNLOAD", "0").strip().lower() in {"1", "true", "yes", "on"}
-
-logger = logging.getLogger("electronics-ai")
-if not logger.handlers:
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_PIXELS = int(os.getenv("ELECTRONICS_AI_MAX_PIXELS", "40000000"))
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
@@ -61,6 +53,11 @@ CLIP_MIN_MARGIN = float(os.getenv("ELECTRONICS_AI_CLIP_MIN_MARGIN", "0.012"))
 CLIP_TEMPERATURE = float(os.getenv("ELECTRONICS_AI_CLIP_TEMPERATURE", "0.03"))
 CLIP_VERIFY_MIN_SIM = float(os.getenv("ELECTRONICS_AI_CLIP_VERIFY_MIN_SIM", "0.18"))
 CLIP_VERIFY_MARGIN = float(os.getenv("ELECTRONICS_AI_CLIP_VERIFY_MARGIN", "0.010"))
+GEMINI_ENABLED = os.getenv("ELECTRONICS_AI_ENABLE_GEMINI_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("ELECTRONICS_AI_GEMINI_MODEL", "gemini-3.8-flash").strip()
+GEMINI_MIN_ACCEPT = float(os.getenv("ELECTRONICS_AI_GEMINI_MIN_ACCEPT", "0.55"))
+GEMINI_MAX_DETECTIONS = max(1, min(10, int(os.getenv("ELECTRONICS_AI_GEMINI_MAX_DETECTIONS", "5"))))
 MAX_DETECTIONS = max(1, min(50, int(os.getenv("ELECTRONICS_AI_MAX_DETECTIONS", "20"))))
 DEDUP_IOU = float(os.getenv("ELECTRONICS_AI_DEDUP_IOU", "0.92"))
 MEMORY_SIMILARITY = float(os.getenv("ELECTRONICS_AI_MEMORY_SIMILARITY", "0.95"))
@@ -611,246 +608,49 @@ def circuit_analysis(detections):
 
 
 class AIEngine:
-    """
-    AI runtime.
-
-    Production policy:
-      1. Custom YOLO is the primary/authoritative model.
-      2. If YOLO loads successfully, CLIP is never loaded.
-      3. CLIP is an explicit opt-in fallback only when YOLO is unavailable.
-      4. All model-path/load failures are logged with the real exception.
-    """
-
     def __init__(self):
-        self.model = None
-        self.processor = None
-        self.model_name = None
-        self.text_features = None
-        self.class_prompts = None
-
-        self.detector = None
-        self.detector_path = None
-
-        self.lock = threading.Lock()
-        self.loading = False
-        self.error = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model=None; self.processor=None; self.model_name=None; self.text_features=None; self.class_prompts=None
+        self.detector=None; self.detector_path=None
+        self.gemini_client=None; self.gemini_error=None
+        self.lock=threading.Lock(); self.gemini_lock=threading.Lock(); self.loading=False; self.error=None
+        self.device="cuda" if torch.cuda.is_available() else "cpu"
 
     @property
     def ready(self):
-        # For this deployment, "ready" means the custom YOLO detector is ready.
-        # CLIP-only fallback is deliberately not treated as the primary AI.
-        return self.detector is not None
-
-    def _model_candidates(self):
-        candidates = []
-
-        if CUSTOM_MODEL_ENV:
-            env_path = Path(CUSTOM_MODEL_ENV).expanduser()
-            if not env_path.is_absolute():
-                env_path = BASE / env_path
-            candidates.append(env_path)
-
-        # Canonical production path first.
-        candidates.extend([
-            CUSTOM_MODEL,
-            CUSTOM_MODEL_ALT,
-            CUSTOM_MODEL_ALT2,
-        ])
-
-        # Also support an absolute /app path when the app is mounted there.
-        candidates.append(Path("/app/models/best.pt"))
-
-        # Remove duplicates while preserving order.
-        unique = []
-        seen = set()
-        for candidate in candidates:
-            try:
-                key = str(candidate.resolve())
-            except Exception:
-                key = str(candidate)
-            if key not in seen:
-                seen.add(key)
-                unique.append(candidate)
-        return unique
+        return (self.detector is not None or (self.model is not None and self.text_features is not None)
+                or (GEMINI_ENABLED and bool(GEMINI_API_KEY) and genai is not None))
 
     def load_detector(self):
-        logger.info("==================================================")
-        logger.info("Searching for custom YOLO model...")
-        logger.info("BASE directory: %s", BASE)
-        logger.info("Python executable: %s", os.sys.executable)
-        logger.info("Torch version: %s", getattr(torch, "__version__", "unknown"))
-        logger.info("Device: %s", self.device)
-
-        if YOLO is None:
-            self.error = (
-                "Ultralytics YOLO could not be imported. "
-                "Check the ultralytics/torch installation in Railway."
-            )
-            logger.error("ULTRALYTICS IMPORT FAILED: YOLO is None")
-            return False
-
-        logger.info("Ultralytics import: SUCCESS")
-
-        candidates = self._model_candidates()
-        found_any = False
-        errors = []
-
-        for candidate in candidates:
-            logger.info("Checking: %s", candidate)
-
-            if not candidate.exists():
-                logger.info("  -> NOT FOUND")
-                continue
-
-            if not candidate.is_file():
-                logger.error("  -> EXISTS BUT IS NOT A FILE")
-                errors.append(f"{candidate}: not a file")
-                continue
-
-            found_any = True
-            try:
-                size_mb = candidate.stat().st_size / (1024 * 1024)
-                logger.info("  -> FOUND (%.2f MB)", size_mb)
-
-                if candidate.stat().st_size < 1024 * 1024:
-                    logger.warning("  -> Model file is unusually small; attempting load anyway.")
-
-                logger.info("Loading YOLO model: %s", candidate)
-                detector = YOLO(str(candidate))
-
-                # Force the model to CPU when Railway has no GPU. This makes the
-                # intended runtime explicit and avoids accidental CUDA assumptions.
-                if self.device == "cpu":
-                    try:
-                        detector.to("cpu")
-                    except Exception:
-                        # Some Ultralytics versions do not expose .to() on the wrapper
-                        # in exactly the same way; inference will still default to CPU.
-                        pass
-
-                self.detector = detector
-                self.detector_path = candidate.resolve()
-                self.error = None
-
-                logger.info("SUCCESS: Custom YOLO model loaded")
-                logger.info("Model path: %s", self.detector_path)
-                logger.info("Model classes: %s", getattr(detector, "names", "unknown"))
-                logger.info("==================================================")
-                return True
-
-            except Exception as exc:
-                message = f"{type(exc).__name__}: {exc}"
-                errors.append(f"{candidate}: {message}")
-                logger.exception("FAILED to load YOLO model: %s", candidate)
-
-        if not found_any:
-            self.error = (
-                "Custom YOLO model file was not found. "
-                "Checked: " + "; ".join(str(x) for x in candidates)
-            )
-            logger.error("NO CUSTOM YOLO MODEL FOUND")
-        else:
-            self.error = "Custom YOLO model was found but could not be loaded: " + " | ".join(errors)
-            logger.error("CUSTOM YOLO LOAD FAILED: %s", self.error)
-
-        logger.info("==================================================")
-        return False
-
-    def load_clip_fallback(self):
-        """
-        Optional CLIP fallback. This function is never called when YOLO is ready.
-        It is disabled by default to avoid Hugging Face downloads/RAM usage.
-        """
-        if not ENABLE_CLIP_FALLBACK:
-            logger.info("CLIP fallback: DISABLED (ELECTRONICS_AI_ENABLE_CLIP_FALLBACK=0)")
-            return False
-
-        logger.info("CLIP fallback: ENABLED")
-        logger.info("CLIP model download allowed: %s", ALLOW_CLIP_DOWNLOAD)
-
-        try:
-            from transformers import CLIPModel, CLIPProcessor
-        except Exception as exc:
-            logger.exception("Transformers/CLIP import failed")
-            if self.detector is None:
-                self.error = f"CLIP fallback import failed: {type(exc).__name__}: {exc}"
-            return False
-
-        last = None
-        local_files_only = not ALLOW_CLIP_DOWNLOAD
-
-        for name in (PRIMARY_MODEL, FALLBACK_MODEL):
-            try:
-                logger.info("Loading optional CLIP model: %s", name)
-                logger.info("local_files_only=%s", local_files_only)
-
-                proc = CLIPProcessor.from_pretrained(
-                    name,
-                    local_files_only=local_files_only,
-                )
-                model = CLIPModel.from_pretrained(
-                    name,
-                    local_files_only=local_files_only,
-                ).to(self.device)
-                model.eval()
-
-                self.processor = proc
-                self.model = model
-                self.model_name = name
-                self.prepare_text_features()
-
-                logger.info("SUCCESS: Optional CLIP model loaded: %s", name)
-                return True
-
-            except Exception as exc:
-                last = exc
-                logger.exception("Optional CLIP load failed: %s", name)
-
-        if self.detector is None and last is not None:
-            self.error = f"Optional CLIP fallback failed: {type(last).__name__}: {last}"
-        return False
+        if YOLO is None: return
+        for candidate in (CUSTOM_MODEL, CUSTOM_MODEL_ALT, CUSTOM_MODEL_ALT2):
+            if candidate.exists():
+                try:
+                    self.detector=YOLO(str(candidate)); self.detector_path=str(candidate); return
+                except Exception as exc:
+                    self.error=f"Custom YOLO failed: {exc}"
 
     def load(self):
-        if self.loading:
-            return
-
-        if self.detector is not None:
-            return
-
-        self.loading = True
-        self.error = None
-
+        if self.ready or self.loading: return
+        self.loading=True; self.error=None
+        self.load_detector()
+        self.load_gemini()
+        # A custom model is enough to serve the app. CLIP is a fallback/second stage, not a hard dependency.
         try:
-            # IMPORTANT: YOLO is always attempted first.
-            yolo_ok = self.load_detector()
-
-            # If YOLO works, STOP. Do not initialize/download CLIP.
-            if yolo_ok:
-                logger.info("Custom YOLO is ready; CLIP will NOT be loaded.")
-                return
-
-            # YOLO failed. CLIP is still optional and disabled by default.
-            self.load_clip_fallback()
-
-            if self.detector is None and self.model is None:
-                if not self.error:
-                    self.error = "No AI model is available."
-                logger.error("AI initialization failed: %s", self.error)
-
+            from transformers import CLIPModel, CLIPProcessor
+            last=None
+            for name in (PRIMARY_MODEL, FALLBACK_MODEL):
+                try:
+                    offline=os.getenv("ELECTRONICS_AI_ALLOW_MODEL_DOWNLOAD", "0") != "1"
+                    proc=CLIPProcessor.from_pretrained(name, local_files_only=offline)
+                    model=CLIPModel.from_pretrained(name, local_files_only=offline).to(self.device); model.eval()
+                    self.processor,self.model,self.model_name=proc,model,name
+                    self.prepare_text_features(); last=None; break
+                except Exception as exc: last=exc
+            if last and self.detector is None: self.error=str(last)
         except Exception as exc:
-            self.error = f"AI initialization failed: {type(exc).__name__}: {exc}"
-            logger.exception("AI initialization crashed")
-
+            if self.detector is None: self.error=str(exc)
         finally:
-            self.loading = False
-            logger.info(
-                "AI initialization finished | ready=%s | detector=%s | clip=%s | error=%s",
-                self.ready,
-                self.detector_path,
-                self.model_name,
-                self.error,
-            )
+            self.loading=False
 
     def prepare_text_features(self):
         prompts, owners = [], []
@@ -863,25 +663,23 @@ class AIEngine:
                     f"a real electronic device: {p}",
                 ])
                 owners.extend([cls] * 3)
-
         with torch.inference_mode():
             inp = self.processor(text=prompts, return_tensors="pt", padding=True)
             inp = {k: v.to(self.device) for k, v in inp.items()}
             feat = self.model.get_text_features(**inp)
             feat = feat / feat.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-
         self.text_features = feat
         self.class_prompts = owners
 
     def image_embedding(self, image):
-        """Return a normalized CLIP image embedding when optional CLIP is available."""
+        """Return a normalized CLIP image embedding when CLIP is available."""
         if self.model is None or self.processor is None:
             return None
         with torch.inference_mode():
-            inp = self.processor(images=image, return_tensors="pt")
-            inp = {k: v.to(self.device) for k, v in inp.items()}
-            feat = self.model.get_image_features(**inp)
-            feat = feat / feat.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            inp=self.processor(images=image, return_tensors="pt")
+            inp={k:v.to(self.device) for k,v in inp.items()}
+            feat=self.model.get_image_features(**inp)
+            feat=feat / feat.norm(dim=-1,keepdim=True).clamp_min(1e-12)
             return feat[0].detach().float().cpu().tolist()
 
     @staticmethod
@@ -894,80 +692,194 @@ class AIEngine:
     def yolo_analyze(self, image):
         if self.detector is None:
             return None
-
         results = self.detector.predict(
-            source=image,
-            conf=YOLO_CONF,
-            imgsz=YOLO_IMGSZ,
-            iou=0.50,
-            max_det=MAX_DETECTIONS,
-            augment=True,
-            verbose=False,
-            device="cpu" if self.device == "cpu" else None,
+            source=image, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, iou=0.50,
+            max_det=MAX_DETECTIONS, augment=True, verbose=False
         )
-
         if not results:
             return None
-
         result = results[0]
         names = result.names
         detections = []
-
         if result.boxes is not None and len(result.boxes) > 0:
             for box, conf, cls_id in zip(
                 result.boxes.xyxy.tolist(),
                 result.boxes.conf.tolist(),
                 result.boxes.cls.tolist()
             ):
-                raw = (
-                    names.get(int(cls_id), str(int(cls_id)))
-                    if isinstance(names, dict)
-                    else names[int(cls_id)]
-                )
+                raw = names.get(int(cls_id), str(int(cls_id))) if isinstance(names, dict) else names[int(cls_id)]
                 detections.append({
                     "name": canonical_name(raw),
                     "raw_name": str(raw),
                     "score": round(float(conf), 4),
                     "box": [round(float(x), 1) for x in box],
                 })
-
         detections.sort(key=lambda x: x["score"], reverse=True)
         detections = deduplicate_detections(detections)
-
         if not detections:
-            return {
-                "engine": "custom-yolo",
-                "detector_path": str(self.detector_path) if self.detector_path else None,
-                "detections": [],
-                "top": ("Unknown", 0.0),
-                "is_unknown": True,
-                "raw_top": 0.0,
-                "raw_margin": 0.0,
-                "unknown_reason": "ไม่พบวัตถุที่โมเดลตรวจจับได้",
-            }
-
+            return None
         top = detections[0]
         return {
-            "engine": "custom-yolo",
-            "detector_path": str(self.detector_path) if self.detector_path else None,
-            "detections": detections,
-            "top": (top["name"], top["score"]),
+            "engine": "custom-yolo", "detector_path": self.detector_path,
+            "detections": detections, "top": (top["name"], top["score"]),
             "is_unknown": top["score"] < YOLO_MIN_ACCEPT,
             "raw_top": top["score"],
-            "raw_margin": (
-                top["score"] - detections[1]["score"]
-                if len(detections) > 1 else top["score"]
-            ),
-            "unknown_reason": (
-                "ความมั่นใจจากตัวตรวจจับต่ำ"
-                if top["score"] < YOLO_MIN_ACCEPT else None
-            ),
+            "raw_margin": (top["score"] - detections[1]["score"]) if len(detections) > 1 else top["score"],
+            "unknown_reason": "ความมั่นใจจากตัวตรวจจับต่ำ" if top["score"] < YOLO_MIN_ACCEPT else None
         }
+
+    def load_gemini(self):
+        """Create the Gemini client lazily; the API key is never stored in source code."""
+        if not GEMINI_ENABLED:
+            return
+        if not GEMINI_API_KEY:
+            self.gemini_error = "GEMINI_API_KEY is not configured"
+            return
+        if genai is None:
+            self.gemini_error = "google-genai is not installed"
+            return
+        try:
+            self.gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+            self.gemini_error = None
+        except Exception as exc:
+            self.gemini_client = None
+            self.gemini_error = str(exc)[:300]
+
+    @staticmethod
+    def _gemini_label(label):
+        """Map Gemini's label to the closest exact project class."""
+        raw = str(label or "").strip()
+        if not raw:
+            return None
+        if raw in CLASSES:
+            return raw
+        canon = canonical_name(raw)
+        if canon in CLASSES:
+            return canon
+        # Case/spacing tolerant exact comparison first.
+        norm = re.sub(r"[^a-z0-9]+", "", raw.lower())
+        for cls in CLASSES:
+            if re.sub(r"[^a-z0-9]+", "", cls.lower()) == norm:
+                return cls
+        # Then use the knowledge-base canonical names as a conservative fuzzy match.
+        choices = list(CLASSES) + list({canonical_name(x) for x in CLASSES})
+        match = difflib.get_close_matches(raw, choices, n=1, cutoff=0.78)
+        if match:
+            return match[0]
+        return None
+
+    def gemini_analyze(self, image):
+        """Cloud vision fallback used only when local YOLO is uncertain/unavailable."""
+        if not GEMINI_ENABLED:
+            return None
+        if self.gemini_client is None:
+            self.load_gemini()
+        if self.gemini_client is None:
+            return None
+
+        class_list = ", ".join(CLASSES)
+        prompt = f"""
+You are the fallback visual detector for an electronics-component web app.
+Analyze the supplied image and detect prominent electronic components.
+Only return labels from this exact project vocabulary:
+{class_list}
+
+Rules:
+- Do not invent labels and do not use labels outside the vocabulary.
+- Ignore people, hands, text, backgrounds and unrelated objects.
+- Return at most {GEMINI_MAX_DETECTIONS} components.
+- For every detected component return a confidence from 0 to 1.
+- Return box_2d as [ymin, xmin, ymax, xmax], normalized to 0-1000.
+- If no supported component is visible, return an empty boxes list.
+"""
+        schema = {
+            "type": "object",
+            "properties": {
+                "boxes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "box_2d": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4},
+                        },
+                        "required": ["label", "confidence", "box_2d"],
+                    },
+                }
+            },
+            "required": ["boxes"],
+        }
+        try:
+            # The current Google GenAI Python SDK accepts PIL images directly.
+            config = genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=schema,
+                temperature=0.1,
+                max_output_tokens=1200,
+            )
+            with self.gemini_lock:
+                response = self.gemini_client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=[prompt, image],
+                    config=config,
+                )
+            text = (response.text or "").strip()
+            if not text:
+                return None
+            # Be tolerant of markdown fences even if a provider/model returns them.
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+                text = re.sub(r"\s*```$", "", text)
+            payload = json.loads(text)
+            detections = []
+            for item in payload.get("boxes", [])[:GEMINI_MAX_DETECTIONS]:
+                label = self._gemini_label(item.get("label"))
+                if not label:
+                    continue
+                conf = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
+                box = item.get("box_2d", [])
+                if not isinstance(box, (list, tuple)) or len(box) != 4:
+                    continue
+                ymin, xmin, ymax, xmax = [max(0.0, min(1000.0, float(v))) for v in box]
+                x1 = round(xmin * image.width / 1000.0, 1)
+                y1 = round(ymin * image.height / 1000.0, 1)
+                x2 = round(xmax * image.width / 1000.0, 1)
+                y2 = round(ymax * image.height / 1000.0, 1)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                detections.append({
+                    "name": canonical_name(label),
+                    "raw_name": str(item.get("label", label)),
+                    "score": round(conf, 4),
+                    "box": [x1, y1, x2, y2],
+                })
+            detections.sort(key=lambda x: x["score"], reverse=True)
+            detections = deduplicate_detections(detections)
+            if not detections:
+                return {
+                    "engine": "gemini-fallback", "detector_path": None,
+                    "detections": [], "top": ("Unknown", 0.0),
+                    "raw_top": 0.0, "raw_margin": 0.0, "is_unknown": True,
+                    "unknown_reason": "Gemini ไม่พบอุปกรณ์ในรายการที่รองรับ",
+                }
+            top = detections[0]
+            margin = top["score"] - (detections[1]["score"] if len(detections) > 1 else 0.0)
+            return {
+                "engine": "gemini-fallback", "detector_path": None,
+                "detections": detections, "top": (top["name"], top["score"]),
+                "candidates": [(d["name"], d["score"]) for d in detections],
+                "raw_top": top["score"], "raw_margin": margin,
+                "is_unknown": top["score"] < GEMINI_MIN_ACCEPT,
+                "unknown_reason": "Gemini ประเมินความมั่นใจต่ำ" if top["score"] < GEMINI_MIN_ACCEPT else None,
+            }
+        except Exception as exc:
+            self.gemini_error = str(exc)[:500]
+            return None
 
     def clip_analyze(self, image):
         if self.model is None or self.text_features is None:
             return None
-
         with self.lock, torch.inference_mode():
             scores = []
             for view in self.views(image):
@@ -976,67 +888,44 @@ class AIEngine:
                 feat = self.model.get_image_features(**inp)
                 feat = feat / feat.norm(dim=-1, keepdim=True).clamp_min(1e-12)
                 logits = (feat @ self.text_features.T)[0]
-
                 grouped = {c: [] for c in CLASSES}
                 for score, owner in zip(logits.tolist(), self.class_prompts):
                     grouped[owner].append(score)
-
                 scores.append(torch.tensor(
                     [sum(grouped[c]) / len(grouped[c]) for c in CLASSES],
                     device=self.device
                 ))
-
             mean = torch.stack(scores).mean(dim=0)
             vals, inds = torch.topk(mean, k=min(TOP_K, len(CLASSES)))
             candidates = [(CLASSES[int(i)], float(v)) for v, i in zip(vals, inds)]
             raw = [float(v) for v in vals]
             top = raw[0] if raw else 0.0
             margin = raw[0] - raw[1] if len(raw) > 1 else top
-
+            # Softmax is only a ranking aid here; cosine similarity is not a calibrated probability.
             probs = torch.softmax(mean / max(CLIP_TEMPERATURE, 1e-4), dim=0)
             pvals = [float(probs[int(i)]) for i in inds]
             unknown = top < CLIP_MIN_SIM or margin < CLIP_MIN_MARGIN
-
             return {
-                "engine": "clip-zero-shot",
-                "detector_path": None,
-                "detections": [],
-                "top": candidates[0] if candidates else ("Unknown", 0.0),
-                "candidates": candidates,
-                "probabilities": pvals,
-                "raw_top": top,
-                "raw_margin": margin,
-                "is_unknown": unknown,
-                "unknown_reason": (
-                    "คะแนนความคล้ายคลึงต่ำ"
-                    if top < CLIP_MIN_SIM else (
-                        "ผลลัพธ์อันดับต้น ๆ ใกล้เคียงกันเกินไป"
-                        if margin < CLIP_MIN_MARGIN else None
-                    )
-                ),
+                "engine": "clip-zero-shot", "detector_path": None,
+                "detections": [], "top": candidates[0] if candidates else ("Unknown", 0.0),
+                "candidates": candidates, "probabilities": pvals,
+                "raw_top": top, "raw_margin": margin, "is_unknown": unknown,
+                "unknown_reason": "คะแนนความคล้ายคลึงต่ำ" if top < CLIP_MIN_SIM else (
+                    "ผลลัพธ์อันดับต้น ๆ ใกล้เคียงกันเกินไป" if margin < CLIP_MIN_MARGIN else None
+                )
             }
 
     def verify_detections(self, image, yolo_result):
-        """Optional CLIP second opinion. It never changes the YOLO result."""
+        """Optional CLIP second opinion. It never changes or lowers the YOLO result."""
         if self.model is None or not yolo_result or not yolo_result.get("detections"):
             return yolo_result
-
         verified = []
         for det in yolo_result["detections"]:
             item = dict(det)
             x1, y1, x2, y2 = [max(0, int(v)) for v in det["box"]]
-            crop = image.crop((
-                x1, y1,
-                min(image.width, x2),
-                min(image.height, y2)
-            ))
-
+            crop = image.crop((x1, y1, min(image.width, x2), min(image.height, y2)))
             if crop.width < 24 or crop.height < 24:
-                item["verification"] = {
-                    "engine": "clip",
-                    "status": "skipped",
-                    "reason": "วัตถุมีขนาดเล็กเกินไป"
-                }
+                item["verification"] = {"engine": "clip", "status": "skipped", "reason": "วัตถุมีขนาดเล็กเกินไป"}
             else:
                 try:
                     clip = self.clip_analyze(crop)
@@ -1050,54 +939,49 @@ class AIEngine:
                             "similarity": round(float(clip.get("raw_top", 0)), 4),
                             "margin": round(float(clip.get("raw_margin", 0)), 4),
                             "agrees": raw_name == str(det.get("raw_name", det.get("name", ""))),
-                            "candidates": [
-                                {
-                                    "name": canonical_name(n),
-                                    "raw_name": str(n),
-                                    "similarity": round(float(v), 4)
-                                }
-                                for n, v in clip.get("candidates", [])[:TOP_K]
-                            ]
+                            "candidates": [{"name": canonical_name(n), "raw_name": str(n), "similarity": round(float(v), 4)} for n, v in clip.get("candidates", [])[:TOP_K]]
                         }
                 except Exception as exc:
-                    item["verification"] = {
-                        "engine": "clip",
-                        "status": "skipped",
-                        "reason": str(exc)[:200]
-                    }
-
+                    item["verification"] = {"engine": "clip", "status": "skipped", "reason": str(exc)[:200]}
+            # Critical: the authoritative score remains the trained YOLO confidence.
             item["trust_score"] = item["score"]
             verified.append(item)
-
         result = dict(yolo_result)
         result["detections"] = verified
         result["verification_engine"] = "clip-support-only"
         result["verification_review"] = False
+        # Never convert a valid YOLO detection into Unknown because CLIP disagrees.
         return result
 
     def analyze(self, image):
-        """
-        Primary inference path.
+        # Hybrid pipeline: trained YOLO first -> Gemini Vision fallback -> CLIP fallback.
+        try:
+            y = self.yolo_analyze(image)
+            if y and not y.get("is_unknown"):
+                return self.verify_detections(image, y)
+            low_conf_yolo = y
+        except Exception as exc:
+            self.error = f"YOLO inference failed; using Gemini fallback: {exc}"
+            low_conf_yolo = None
 
-        If custom YOLO is loaded, it is the only model used. A low YOLO
-        confidence does NOT trigger a CLIP download/load.
-        """
-        if self.detector is not None:
-            try:
-                return self.yolo_analyze(image)
-            except Exception as exc:
-                self.error = f"YOLO inference failed: {type(exc).__name__}: {exc}"
-                logger.exception("YOLO inference failed")
-                raise RuntimeError(self.error) from exc
+        g = self.gemini_analyze(image)
+        if g and not g.get("is_unknown"):
+            if low_conf_yolo:
+                g["fallback_from_yolo"] = low_conf_yolo.get("top")
+            return g
 
-        # CLIP is only considered when YOLO is unavailable and was explicitly enabled.
-        if self.model is not None and self.text_features is not None:
-            return self.clip_analyze(image)
-
-        raise RuntimeError(
-            self.error or
-            "No local AI model is available. Custom YOLO is not loaded."
-        )
+        c = self.clip_analyze(image)
+        if c:
+            if low_conf_yolo and not c.get("is_unknown"):
+                c["fallback_from_yolo"] = low_conf_yolo.get("top")
+            if g and g.get("is_unknown"):
+                c["gemini_fallback"] = {"status": "low_confidence", "top": g.get("top")}
+            return c
+        if g:
+            return g
+        if low_conf_yolo:
+            return self.verify_detections(image, low_conf_yolo)
+        raise RuntimeError(self.error or self.gemini_error or "No AI model is available")
 
 
 engine=AIEngine()
@@ -1135,7 +1019,7 @@ def display_result(raw, quality):
             "score": round(score, 4),
             "score_percent": round(max(0, min(1, score)) * 100, 1),
             "level": "Needs Review",
-            "confidence_kind": "model confidence score" if engine_name == "custom-yolo" else ("learned memory match" if engine_name == "learned-memory" else "estimated similarity"),
+            "confidence_kind": ("model confidence score" if engine_name == "custom-yolo" else ("Gemini visual confidence (estimated)" if engine_name == "gemini-fallback" else ("learned memory match" if engine_name == "learned-memory" else "estimated similarity"))),
             "margin": raw.get("raw_margin"),
             "engine": engine_name, "detector_path": raw.get("detector_path"),
             "detections": detections, "predictions": [],
@@ -1143,18 +1027,20 @@ def display_result(raw, quality):
         }
 
     d = detail_for(knowledge_name)
+    candidates = []
     if engine_name == "custom-yolo":
         verification_review = bool(raw.get("verification_review"))
         level = level_for_yolo(score)
         kind = "model confidence score"
-        candidates = [
-        (x.get("raw_name", x["name"]), x.get("score", 0.0))
-        for x in detections[:TOP_K]
-    ]
+        candidates = [(x.get("raw_name", x.get("name", "Unknown")), x.get("score", 0.0)) for x in detections[:TOP_K]]
+    elif engine_name == "gemini-fallback":
+        level = "High Confidence" if score >= 0.80 else ("Medium Confidence" if score >= GEMINI_MIN_ACCEPT else "Needs Review")
+        kind = "Gemini visual confidence (estimated)"
+        candidates = raw.get("candidates", [(model_name, score)])
     elif engine_name == "learned-memory":
         level = "Learned"
         kind = "learned memory match"
-        candidates = [(x.get("raw_name", x["name"]), x.get("score", 0.0)) for x in detections[:TOP_K]]
+        candidates = [(x.get("raw_name", x.get("name", "Unknown")), x.get("score", 0.0)) for x in detections[:TOP_K]]
     else:
         level = level_for_clip(raw.get("raw_margin", 0), score)
         kind = "estimated similarity ranking"
@@ -1206,19 +1092,7 @@ def index(): return render_template("index.html")
 
 @app.get("/api/status")
 def status():
-    return jsonify({
-        "success": True,
-        "data": None,
-        "ready": engine.ready,
-        "loading": engine.loading,
-        "error": engine.error,
-        "model": "custom-yolo" if engine.detector else (engine.model_name or PRIMARY_MODEL),
-        "device": engine.device,
-        "classes": len(CLASSES),
-        "custom_model": str(engine.detector_path) if engine.detector_path else None,
-        "clip_enabled": ENABLE_CLIP_FALLBACK,
-        "clip_loaded": engine.model is not None,
-    })
+    return jsonify({"success":True,"data":None,"ready":engine.ready,"loading":engine.loading,"error":engine.error,"model":engine.model_name or ("custom-yolo" if engine.detector else (GEMINI_MODEL if engine.gemini_client else PRIMARY_MODEL)),"device":engine.device,"classes":len(CLASSES),"custom_model":str(engine.detector_path) if engine.detector_path else None,"gemini":{"enabled":GEMINI_ENABLED,"configured":bool(GEMINI_API_KEY),"client_ready":engine.gemini_client is not None,"model":GEMINI_MODEL,"error":engine.gemini_error}})
 
 @app.get("/api/library")
 @app.get("/api/components")
@@ -1511,17 +1385,7 @@ def server_error(_): return api_error("เซิร์ฟเวอร์เก�
 # Production-friendly health/model metadata endpoints.
 @app.get("/api/health")
 def health():
-    return jsonify({
-        "success": True,
-        "data": {
-            "status": "ok" if engine.ready else "degraded",
-            "ai_ready": engine.ready,
-            "device": engine.device,
-            "custom_model": str(engine.detector_path) if engine.detector_path else None,
-            "clip_enabled": ENABLE_CLIP_FALLBACK,
-            "clip_loaded": engine.model is not None,
-        },
-    }), (200 if engine.ready else 503)
+    return jsonify({"success": True, "data": {"status": "ok" if engine.ready else "degraded", "ai_ready": engine.ready, "device": engine.device}}), (200 if engine.ready else 503)
 
 @app.get("/api/models")
 def models_info():
@@ -1529,6 +1393,7 @@ def models_info():
     return jsonify({"success":True,"data":{
         "yolo":{"path":str(model_path) if model_path else None,"available":bool(model_path and model_path.exists())},
         "clip":{"name":engine.model_name,"available":engine.model is not None},
+        "gemini":{"enabled":GEMINI_ENABLED,"configured":bool(GEMINI_API_KEY),"available":engine.gemini_client is not None,"model":GEMINI_MODEL,"error":engine.gemini_error},
         "device":engine.device,"classes":len(CLASSES),"dataset_version":"custom_dataset","last_trained":datetime.fromtimestamp(model_path.stat().st_mtime,timezone.utc).isoformat() if model_path and model_path.exists() else None
     }})
 

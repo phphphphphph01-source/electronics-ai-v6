@@ -1,0 +1,13 @@
+{
+  "created_at": "2026-09-09T15:39:48+00:00",
+  "analysis_id": "20260909_153928_020601",
+  "label": "potentiometer",
+  "raw_label": "Potentiometer",
+  "class_id": 24,
+  "image": "data\\learning_queue\\images\\20260909_153948_884255_20260909_153928_020601.jpg",
+  "label_file": null,
+  "source_image": "uploads\\20260909_153905_336378_11343952_800.jpg",
+  "requires_annotation": true,
+  "source_box": null,
+  "instruction": "Review before model training. Samples without label_file require manual bounding-box annotation."
+}
